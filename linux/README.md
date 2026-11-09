@@ -18,8 +18,10 @@ unchanged. There is no account, no server and no telemetry: one connection
 between the two devices. **The stream is not encrypted**, so use it on a
 network you trust.
 
-Video is encoded on the CPU for now (x264); hardware encoding (VA-API) is
-planned.
+Video is encoded on the CPU (x264) by default. Hardware encoding through
+VA-API (Intel and AMD) is available as an opt-in, `--encoder vaapi`, when
+od-sender is built against an FFmpeg with VA-API, as the Arch package is; the
+release tarball does not have it yet.
 
 The other direction, a Linux machine as the display, is the
 [Linux receiver](#linux-receiver-beta), also in beta.
@@ -178,7 +180,7 @@ Useful `run` options:
 | `--scale` | `passthrough` | `passthrough` (the receiver's own, 3 on most iPhones), `mac` (2 for Retina-class screens, else 1, like the Mac sender) or a number. GNOME and Hyprland round to a scale they support (GNOME: an iPhone's 3 becomes 2; Hyprland: a Pixel's 2.625 becomes 2.667). If text is too small, try a larger number |
 | `--bitrate-mbps` | `20` | Video bitrate |
 | `--max-fps` | 60 | Frame-rate cap; above 60 only when the receiver's decoder advertises it, and never above its panel rate |
-| `--encoder` | `auto` | `auto`, `v4l2m2m`, `x264` or `openh264` |
+| `--encoder` | `auto` | `auto`, `v4l2m2m`, `vaapi`, `x264` or `openh264` |
 | `--cursor` | `auto` | `auto`, `video` (always paint the cursor into the video) or `off`; `--no-cursor` is `off`. `auto` sends the cursor separately when the receiver and desktop support it, which today means never on Hyprland |
 | `--capture` | `auto` | Screen-capture protocol on Hyprland and Sway: `auto`, `ext` or `wlr`. `auto` uses `wlr` on Hyprland before 0.57, whose `ext` capture can crash when a display disappears |
 | `--workspace` | next free one | Show this workspace (name or number) on the virtual display, keeping your focus where it is. Hyprland and Sway; ignored with a warning on KDE Plasma and GNOME |
@@ -211,7 +213,7 @@ position = "auto-right"
 scale = "passthrough"    # "passthrough", "mac" or a number
 bitrate-mbps = 20
 max-fps = 60
-encoder = "auto"         # "auto", "v4l2m2m", "x264" or "openh264"
+encoder = "auto"         # "auto", "v4l2m2m", "vaapi", "x264" or "openh264"
 cursor = "auto"          # "auto", "video" or "off" (true/false: auto/off)
 capture = "auto"         # "auto", "ext" or "wlr"
 workspace = "8"          # Hyprland/Sway: show workspace 8 on the virtual display
@@ -351,10 +353,12 @@ rm -r ~/.config/opendisplay                              # optional: your settin
   display changes. Hyprland's cursor-capture interface cannot deliver the
   cursor image yet, so the separate cursor channel stays off there. Use
   `--cursor off` to leave it out.
-* **CPU encoding.** Hardware encoding (VA-API, V4L2) is not used yet, so
-  encoding runs on the CPU with x264. A 5K iMac streamed at 4096x2304 costs
-  noticeably more CPU and shows about 55-70 ms end to end, against ~20 ms for
-  an iPhone.
+* **CPU encoding.** By default encoding runs on the CPU with x264. A 5K
+  iMac streamed at 4096x2304 costs noticeably more CPU and shows about 55-70
+  ms end to end, against ~20 ms for an iPhone. `--encoder vaapi` moves the
+  encode itself to the GPU, but colour conversion still runs on the CPU and
+  is most of the cost, so it saves about a fifth of the sender's CPU and adds
+  some latency; it is not chosen automatically yet.
 * **Sway, KDE Plasma and GNOME are untested on real desktops.** See
   [Supported setups](#supported-setups).
 * **Android** is untested beyond a first session: touch, scroll, rotation,

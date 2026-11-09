@@ -22,8 +22,10 @@ no server and no telemetry: one connection between the two devices.
 
 > **The stream is not encrypted**, so use it on a network you trust.
 
-Video is encoded on the CPU for now (x264); hardware encoding (VA-API) is
-planned.
+Video is encoded on the CPU (x264) by default. Hardware encoding through
+VA-API (Intel and AMD) is available as an opt-in, `--encoder vaapi`, when
+od-sender is built against an FFmpeg with VA-API, as the Arch package is; the
+release tarball does not have it yet.
 
 The other direction, a Linux machine as the display, is the
 [Linux receiver](/docs/linux/receiver/), also in beta.
@@ -67,10 +69,12 @@ use and about 60 ms of latency, against ~20 ms for a phone.
   display changes. Hyprland's cursor-capture interface cannot deliver the
   cursor image yet, so the separate cursor channel stays off there. Use
   `--cursor off` to leave it out.
-- **CPU encoding.** Hardware encoding (VA-API, V4L2) is not used yet, so
-  encoding runs on the CPU with x264. A 5K iMac streamed at 4096x2304 costs
-  noticeably more CPU and shows about 55-70 ms end to end, against ~20 ms for
-  an iPhone.
+- **CPU encoding.** By default encoding runs on the CPU with x264. A 5K
+  iMac streamed at 4096x2304 costs noticeably more CPU and shows about 55-70
+  ms end to end, against ~20 ms for an iPhone. `--encoder vaapi` moves the
+  encode itself to the GPU, but colour conversion still runs on the CPU and
+  is most of the cost, so it saves about a fifth of the sender's CPU and adds
+  some latency; it is not chosen automatically yet.
 - **Sway, KDE Plasma and GNOME are untested on real desktops.**
 - **Android** is untested beyond a first session: touch, scroll, rotation,
   lock and quit are not checked yet.
