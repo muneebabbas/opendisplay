@@ -172,6 +172,15 @@ impl Encoder {
         }
     }
 
+    /// Frames at least this wide are converted by the [`ConvertStage`]
+    /// ahead of the encoder.
+    pub fn stage_min_width(&self) -> u32 {
+        match self.backend {
+            Backend::Vaapi => 0,
+            _ => MIN_STAGE_WIDTH,
+        }
+    }
+
     /// Encode one frame: 4-byte RGB pixels in the capture's byte order
     /// ([`crate::backend::PixelFormat`]), or already converted by a
     /// [`ConvertStage`]; a dmabuf frame is an error until capture can hand
