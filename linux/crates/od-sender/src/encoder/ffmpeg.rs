@@ -107,14 +107,25 @@ impl Drop for HwFrames {
     }
 }
 
+/// A frame the encoder has and has not returned a packet for yet.
+struct InFlight {
+    pts: i64,
+    captured_at: Instant,
+    /// When the encode call for it started.
+    started: Instant,
+    /// The GPU conversion's source surface, held until the packet is out so
+    /// the pool cannot reuse it while the GPU may still read it.
+    _source: Option<ff::frame::Video>,
+}
+
 pub struct FfmpegEncoder {
     enc: ff::encoder::Video,
     convert: Converter,
     yuv: ff::frame::Video,
     pts: i64,
-    /// Capture instants of frames handed to the encoder, by pts. A hardware
-    /// encoder may return a packet one call late.
-    in_flight: VecDeque<(i64, Instant, Instant)>,
+    /// Frames handed to the encoder whose packet has not come out yet, in
+    /// pts order. A hardware encoder may return a packet one call late.
+    in_flight: VecDeque<InFlight>,
     /// Parameter sets from the last IDR, prepended to any IDR that arrives
     /// without them (§5.1). x264 repeats them itself; V4L2 drivers vary.
     param_sets: Vec<u8>,
@@ -296,7 +307,9 @@ impl FfmpegEncoder {
                 format,
                 &mut self.steps,
             ) {
-                Ok(mut surface) => return self.send(&mut surface, force_idr, captured_at, t0),
+                Ok((mut surface, source)) => {
+                    return self.send(&mut surface, Some(source), force_idr, captured_at, t0);
+                }
                 Err(e) => {
                     // A driver that failed once will fail again: keep
                     // streaming on the CPU path instead.
@@ -351,6 +364,8 @@ impl FfmpegEncoder {
     }
 
     /// RGB pixels to a fresh NV12 surface of the encoder's pool, on the GPU.
+    /// Returns that surface and the source surface the GPU reads, which must
+    /// be kept until the encoder is done ([`GpuConvert::convert`]).
     fn convert_on_gpu(
         gpu: &mut GpuConvert,
         hw: Option<&HwFrames>,
@@ -358,12 +373,12 @@ impl FfmpegEncoder {
         stride: u32,
         format: PixelFormat,
         steps: &mut Steps,
-    ) -> Result<ff::frame::Video> {
+    ) -> Result<(ff::frame::Video, ff::frame::Video)> {
         let hw = hw.ok_or_else(|| anyhow!("no VA-API surfaces"))?;
         let mut surface = hw_surface(hw.frames)?;
-        gpu.convert(&surface, pixels, stride, format, steps)?;
+        let source = gpu.convert(&surface, pixels, stride, format, steps)?;
         tag_bt709(&mut surface);
-        Ok(surface)
+        Ok((surface, source))
     }
 
     fn submit(
@@ -377,17 +392,18 @@ impl FfmpegEncoder {
             Some(hw) => {
                 let mut surface = hw.upload(frame)?;
                 self.steps.lap("upload");
-                self.send(&mut surface, force_idr, captured_at, t0)
+                self.send(&mut surface, None, force_idr, captured_at, t0)
             }
-            None => self.send(frame, force_idr, captured_at, t0),
+            None => self.send(frame, None, force_idr, captured_at, t0),
         }
     }
 
     /// Encode a frame the encoder can take as it is: system memory, or a
-    /// VA-API surface.
+    /// VA-API surface. `source` is kept until the frame's packet is out.
     fn send(
         &mut self,
         frame: &mut ff::frame::Video,
+        source: Option<ff::frame::Video>,
         force_idr: bool,
         captured_at: Instant,
         t0: Instant,
@@ -400,7 +416,12 @@ impl FfmpegEncoder {
         });
         self.enc.send_frame(frame).context("send_frame")?;
         self.steps.lap("send_frame");
-        self.in_flight.push_back((self.pts, captured_at, t0));
+        self.in_flight.push_back(InFlight {
+            pts: self.pts,
+            captured_at,
+            started: t0,
+            _source: source,
+        });
         // 1/60 s apart in the time base; the encoder only needs monotonic pts.
         self.pts += 16_667;
 
@@ -430,11 +451,12 @@ impl FfmpegEncoder {
         Ok(out)
     }
 
+    /// The capture and start instants of the frame with `pts`. Entries
+    /// before it are dropped: their packets are not coming.
     fn take_in_flight(&mut self, pts: Option<i64>) -> (Instant, Instant) {
-        while let Some(&(p, cap, started)) = self.in_flight.front() {
-            self.in_flight.pop_front();
-            if pts.is_none_or(|t| t <= p) {
-                return (cap, started);
+        while let Some(f) = self.in_flight.pop_front() {
+            if pts.is_none_or(|t| t <= f.pts) {
+                return (f.captured_at, f.started);
             }
         }
         let now = Instant::now();
@@ -688,7 +710,8 @@ mod tests {
             gpu.set_direct_upload(direct);
             let (px, stride) = patches(format);
             let dst = hw_surface(hw.frames).unwrap();
-            gpu.convert(&dst, &px, stride, format, &mut Steps::new("test"))
+            let _src = gpu
+                .convert(&dst, &px, stride, format, &mut Steps::new("test"))
                 .unwrap();
             let got = download(&dst).unwrap();
             // swscale is the reference the receiver's colours are defined by.
@@ -783,6 +806,63 @@ mod tests {
     }
 
     #[test]
+    fn vaapi_gpu_frames_encode_in_order() {
+        // Nothing waits for the GPU conversion before the encoder takes its
+        // output, and surfaces are pooled: each picture must still be its
+        // own frame, not a pool neighbour or a half-converted one. Full
+        // size, so the conversion takes long enough to be caught out.
+        let (w, h) = (2388, 1668);
+        let Some(mut e) = vaapi(w, h) else { return };
+        if !e.gpu_convert() {
+            eprintln!("skipped: no GPU colour conversion here");
+            return;
+        }
+        let Some(codec) = ff::decoder::find(ff::codec::Id::H264) else {
+            eprintln!("skipped: this FFmpeg has no H.264 decoder");
+            return;
+        };
+        let mut dec = ff::codec::context::Context::new_with_codec(codec)
+            .decoder()
+            .video()
+            .unwrap();
+        // Grey levels far apart, one per frame, in BGRX.
+        let level = |i: usize| (16 + (i * 37) % 224) as u8;
+        let mut want = Vec::new();
+        let mut got = Vec::new();
+        for i in 0..16 {
+            let px = vec![level(i); (w * h * 4) as usize];
+            want.push(level(i));
+            for u in e
+                .encode(&px, w * 4, PixelFormat::Xrgb8888, i == 0, Instant::now())
+                .unwrap()
+            {
+                dec.send_packet(&ff::Packet::copy(&u.unit.annexb)).unwrap();
+                let mut out = ff::frame::Video::empty();
+                while dec.receive_frame(&mut out).is_ok() {
+                    // Top-left, centre and bottom-right luma.
+                    let y = |x: usize, r: usize| out.data(0)[r * out.stride(0) + x];
+                    let (w, h) = (w as usize, h as usize);
+                    got.push([y(8, 8), y(w / 2, h / 2), y(w - 8, h - 8)]);
+                }
+            }
+        }
+        dec.send_eof().unwrap();
+        let mut out = ff::frame::Video::empty();
+        while dec.receive_frame(&mut out).is_ok() {
+            got.push([out.data(0)[0]; 3]);
+        }
+        assert_eq!(got.len(), want.len());
+        for (i, (g, l)) in got.iter().zip(&want).enumerate() {
+            // Limited range: 16 + l * 219 / 255, and lossy.
+            let y = 16 + (*l as u32 * 219 + 127) / 255;
+            assert!(
+                g.iter().all(|&g| (g as u32).abs_diff(y) <= 3),
+                "frame {i}: luma {g:?}, expected {y}"
+            );
+        }
+    }
+
+    #[test]
     fn vaapi_gpu_convert_handles_any_size() {
         // The last is what a 1001x777 capture is cropped to (even sizes);
         // the capture buffer keeps its own, larger, stride.
@@ -811,24 +891,31 @@ mod tests {
             times.sort_by(f64::total_cmp);
             eprintln!("{w}x{h}: encode call p50 {:.2} ms", times[times.len() / 2]);
 
-            // The conversion alone: upload, VPP and wait (informational).
+            // The conversion alone: upload, VPP and a read back (informational).
             let Some((hw, mut g)) = gpu(w, h) else { return };
             let dst = hw_surface(hw.frames).unwrap();
             let mut conv = Vec::new();
             for _ in 0..30 {
                 let t = Instant::now();
-                g.convert(
-                    &dst,
-                    &px,
-                    stride,
-                    PixelFormat::Xrgb8888,
-                    &mut Steps::new("test"),
-                )
-                .unwrap();
+                let src = g
+                    .convert(
+                        &dst,
+                        &px,
+                        stride,
+                        PixelFormat::Xrgb8888,
+                        &mut Steps::new("test"),
+                    )
+                    .unwrap();
+                // Mapping the output waits for the conversion.
+                download(&dst).unwrap();
+                drop(src);
                 conv.push(t.elapsed().as_secs_f64() * 1000.0);
             }
             conv.sort_by(f64::total_cmp);
-            eprintln!("{w}x{h}: GPU convert p50 {:.2} ms", conv[conv.len() / 2]);
+            eprintln!(
+                "{w}x{h}: GPU convert and read back p50 {:.2} ms",
+                conv[conv.len() / 2]
+            );
         }
     }
 }

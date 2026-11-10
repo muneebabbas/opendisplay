@@ -152,7 +152,6 @@ struct VaProcPipelineParameterBuffer {
 const _: () = {
     use std::mem::{offset_of, size_of};
     assert!(size_of::<VaRectangle>() == 8);
-    assert!(offset_of!(VaRectangle, width) == 4);
     assert!(size_of::<VaImageFormat>() == 48);
     assert!(size_of::<VaImage>() == 120);
     assert!(offset_of!(VaImage, buf) == 52);
@@ -160,6 +159,7 @@ const _: () = {
     assert!(offset_of!(VaImage, data_size) == 60);
     assert!(offset_of!(VaImage, pitches) == 68);
     assert!(offset_of!(VaImage, offsets) == 80);
+    assert!(offset_of!(VaRectangle, width) == 4);
     assert!(size_of::<VaProcColorProperties>() == 8);
     assert!(offset_of!(VaProcColorProperties, color_range) == 1);
     assert!(offset_of!(VaProcColorProperties, matrix_coefficients) == 4);
@@ -229,7 +229,6 @@ libva! {
     fn vaBeginPicture(VADisplay, VAContextID, VASurfaceID) -> VAStatus;
     fn vaRenderPicture(VADisplay, VAContextID, *mut VABufferID, c_int) -> VAStatus;
     fn vaEndPicture(VADisplay, VAContextID) -> VAStatus;
-    fn vaSyncSurface(VADisplay, VASurfaceID) -> VAStatus;
     fn vaDeriveImage(VADisplay, VASurfaceID, *mut VaImage) -> VAStatus;
     fn vaDestroyImage(VADisplay, VAImageID) -> VAStatus;
     fn vaMapBuffer(VADisplay, VABufferID, *mut *mut c_void) -> VAStatus;
@@ -429,13 +428,16 @@ impl GpuConvert {
             gpu.verify(dst_frames)
                 .context("the driver's colour conversion is not BT.709 limited range")?;
         }
-
         Ok(gpu)
     }
 
     /// Convert one frame of capture pixels (`stride` bytes per row, at least
     /// `width` x `height` visible) into `dst`, a surface of the NV12 pool.
-    /// Returns when the GPU is done, so `pixels` may be released.
+    /// `pixels` may be released on return; the conversion itself is only
+    /// queued. Work on `dst` (encoding it, mapping it) is ordered after it
+    /// by the driver, so nothing waits here. The returned source surface may
+    /// still be read by the GPU: keep it until `dst` has been consumed, or
+    /// the pool could hand it out for the next upload too soon.
     pub fn convert(
         &mut self,
         dst: &ff::frame::Video,
@@ -443,7 +445,7 @@ impl GpuConvert {
         stride: u32,
         format: PixelFormat,
         steps: &mut Steps,
-    ) -> Result<()> {
+    ) -> Result<ff::frame::Video> {
         let (w, h, stride) = (self.width as usize, self.height as usize, stride as usize);
         if stride < w * 4 || pixels.len() < stride * (h - 1) + w * 4 {
             bail!(
@@ -466,7 +468,9 @@ impl GpuConvert {
             upload_ffmpeg(&src, pix, w, h, pixels, stride)?;
         }
         steps.lap("upload");
-        self.run(surface_id(&src), surface_id(dst), steps)
+        self.run(surface_id(&src), surface_id(dst))?;
+        steps.lap("vpp submit");
+        Ok(src)
     }
 
     /// Copy `pixels` into the source surface `surface` through a CPU mapping
@@ -562,8 +566,8 @@ impl GpuConvert {
         Ok(pool)
     }
 
-    /// Render `src` into `dst` and wait for it.
-    fn run(&self, src: VASurfaceID, dst: VASurfaceID, steps: &mut Steps) -> Result<()> {
+    /// Queue rendering `src` into `dst`.
+    fn run(&self, src: VASurfaceID, dst: VASurfaceID) -> Result<()> {
         let va = self.va;
         let region = VaRectangle {
             x: 0,
@@ -604,12 +608,6 @@ impl GpuConvert {
                 let ended = (va.vaEndPicture)(self.display, self.context);
                 va.check("vaRenderPicture", rendered)
                     .and_then(|()| va.check("vaEndPicture", ended))
-                    .and_then(|()| {
-                        steps.lap("vpp submit");
-                        let synced = (va.vaSyncSurface)(self.display, dst);
-                        steps.lap("vpp sync");
-                        va.check("vaSyncSurface", synced)
-                    })
             })
         };
         // SAFETY: `buf` was created above.
@@ -632,7 +630,9 @@ impl GpuConvert {
                 row.chunks_exact_mut(4).for_each(|p| p.copy_from_slice(&c));
             }
             let dst = hw_surface(dst_frames)?;
-            self.convert(&dst, &px, (w * 4) as u32, format, &mut Steps::new("verify"))?;
+            // Held until the read back, which waits for the conversion.
+            let _source =
+                self.convert(&dst, &px, (w * 4) as u32, format, &mut Steps::new("verify"))?;
             let nv12 = download(&dst)?;
             for (at, want, name) in [
                 (h / 4, [63, 102, 240], "red"),
