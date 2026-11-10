@@ -42,6 +42,13 @@ Last updated 2026-11-10 (end of M4). Update this file at the end of every sessio
   per PR); `upstream/main` is merged in by `tools/sync-upstream.sh`. Upstream
   PRs go from `up/<name>` branches cut from `upstream/main`. See README
   "Branch rules". After a stack is merged, drop it from `STACKS`.
+* **Review round 1 (2026-11-10):** one Opus review thread per PR (code-review
+  skill); reviewers pushed small fixes, deferred lists are in each PR's
+  comment. The stack was restacked by hand (no GitHub stack feature on this
+  plan): `git rebase --onto <new lower> <old lower tip> <upper>` bottom-up,
+  CI on every layer with `tools/ci-stack.sh`, force-push with lease. Live
+  smoke test of the top afterwards: GPU capture, HEVC 59 fps. The owner
+  reviews from the top and merges; don't merge PRs. PR #1 marked ready.
 * **Investigations filed** as fork issues #5-#12 (latency: media clock,
   120 Hz virtual output, capture->encode gap, transport, iPad 120 Hz; CPU:
   NAL copies, VPP on imported surfaces, coded-buffer copy).

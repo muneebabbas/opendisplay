@@ -33,8 +33,8 @@ moved 6.6 -> 9.8 W between passes): treat it as indicative only. Method in
 Each milestone is a topic branch with a draft PR in the fork.
 
 ### M0 Base setup (done, 2026-11-09)
-* `linux/vaapi-encoder`: opt-in VA-API H.264 encoder, hardware encoders
-  always use the convert stage, docs. Three commits on upstream v1.30.2.
+* `linux/vaapi-encoder`: opt-in VA-API H.264 encoder, VA-API always uses
+  the convert stage (V4L2 M2M keeps the 2560 px threshold), docs. Three commits on upstream v1.30.2.
 * This branch, the iPad harness, the design doc.
 
 ### M1 Measurement baseline (done, 2026-11-10)

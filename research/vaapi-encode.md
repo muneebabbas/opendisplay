@@ -60,7 +60,7 @@ capture (wl_shm, BGRA)
 | `sei` | 0 | No encoder-identification SEI in IDRs |
 | VUI | BT.709, limited | Set on the context as for x264; decodes as BT.709 (asserted) |
 
-### The convert stage for hardware encoders
+### The convert stage for the VA-API encoder
 
 The convert stage (`encoder/stage.rs`) only engaged at 2560 px and wider: for
 software encoders a narrower frame converts quickly enough inside the encode
@@ -209,9 +209,9 @@ with ffmpeg n9.0.2).
 240 parameter combinations in `out.txt`): source `VA_RT_FORMAT_RGB32`
 BGRX/RGBX, `surface_color_standard = SRGB`, input range FULL,
 `output_color_standard = BT709`, output range REDUCED. Output is
-byte-identical to swscale (red 63,102,240; white 235,128,128). Never use
+within 1-2 levels of swscale (red 63,102,240; white 235,128,128). Never use
 `None` (driver guesses by resolution: BT.601 up to 1280x720). The binding is
-hand-written (11 entry points, struct layouts asserted at compile time) and
+hand-written (14 entry points in M2, 16 with M4's import, struct layouts asserted at compile time) and
 `dlopen`ed, so the static-FFmpeg tarball neither links nor needs libva. A
 startup self-check converts two patches and falls back to swscale if a
 driver gets the colours wrong (AMD untested).
