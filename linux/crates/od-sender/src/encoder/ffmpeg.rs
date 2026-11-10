@@ -414,7 +414,22 @@ impl FfmpegEncoder {
         } else {
             ff::picture::Type::None
         });
-        self.enc.send_frame(frame).context("send_frame")?;
+        if let Err(e) = self.enc.send_frame(frame) {
+            if source.is_some() {
+                // The GPU may still be reading the source surface: park it
+                // in the queue until a later packet drains this entry,
+                // rather than handing it back to the pool now. The pts is
+                // spent so the next frame's timings stay its own.
+                self.in_flight.push_back(InFlight {
+                    pts: self.pts,
+                    captured_at,
+                    started: t0,
+                    _source: source,
+                });
+                self.pts += 16_667;
+            }
+            return Err(e).context("send_frame");
+        }
         self.steps.lap("send_frame");
         self.in_flight.push_back(InFlight {
             pts: self.pts,

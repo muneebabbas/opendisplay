@@ -449,8 +449,9 @@ impl GpuConvert {
     /// Convert one frame of capture pixels (`stride` bytes per row, at least
     /// `width` x `height` visible) into `dst`, a surface of the NV12 pool.
     /// `pixels` may be released on return; the conversion itself is only
-    /// queued. Work on `dst` (encoding it, mapping it) is ordered after it
-    /// by the driver, so nothing waits here. The returned source surface may
+    /// queued, and nothing waits here: work on `dst` (encoding it, mapping
+    /// it) is ordered after it by iHD. libva itself does not promise that
+    /// across contexts, so other drivers are unverified. The returned source surface may
     /// still be read by the GPU: keep it until `dst` has been consumed, or
     /// the pool could hand it out for the next upload too soon.
     pub fn convert(
