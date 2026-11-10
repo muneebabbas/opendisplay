@@ -25,9 +25,10 @@ use crate::backend::{
 };
 use crate::config::{self, Config, Layer};
 use crate::desktop::{self, Debounce, DesktopOptions, DesktopPlan, PlanError, StreamPlan};
-use crate::encoder::{ConvertStage, Encoded, Encoder, EncoderSettings};
+use crate::encoder::{self, ConvertStage, Encoded, Encoder, EncoderSettings};
 use crate::latest;
 use crate::wayland::cursor::base64;
+use opendisplay_proto::video::Codec;
 
 /// How the pointer cursor reaches the receiver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
@@ -147,8 +148,50 @@ pub struct Target {
     pub plan: DesktopPlan,
 }
 
-pub fn target(hello: &Hello, opts: &RunOptions) -> Result<Target, PlanError> {
-    let plan = desktop::plan(hello, &opts.desktop)?;
+/// Development override for A/B comparisons: `OD_FORCE_H264=1` streams H.264
+/// even where HEVC would be used.
+fn force_h264() -> bool {
+    std::env::var_os("OD_FORCE_H264").is_some_and(|v| v == "1")
+}
+
+/// Plan the stream, HEVC when it is a candidate: the encoder is VA-API (the
+/// only HEVC backend), H.264 is not forced, HEVC has not failed in this run,
+/// and the receiver offers it. HEVC is used only if its plan succeeds and
+/// `probe(width, height)` says the GPU opens an encoder at the planned
+/// stream size; otherwise the plan is H.264.
+fn choose_plan(
+    hello: &Hello,
+    desktop: &DesktopOptions,
+    backend: encoder::Backend,
+    force_h264: bool,
+    hevc_failed: bool,
+    probe: impl FnOnce(u32, u32) -> bool,
+) -> Result<DesktopPlan, PlanError> {
+    let offered = desktop::preferred_codec(hello, true) == Codec::Hevc;
+    if force_h264 && offered && backend == encoder::Backend::Vaapi && !hevc_failed {
+        info!("HEVC offered, streaming H.264 (OD_FORCE_H264=1)");
+    }
+    if backend == encoder::Backend::Vaapi && !force_h264 && !hevc_failed && offered {
+        if let Ok(plan) = desktop::plan(hello, desktop, Codec::Hevc) {
+            if probe(plan.stream.width, plan.stream.height) {
+                return Ok(plan);
+            }
+        }
+    }
+    desktop::plan(hello, desktop, Codec::H264)
+}
+
+/// `hevc_allowed` is false once HEVC has failed in this run (the sender
+/// stays on H.264 for every reconnect after that).
+pub fn target(hello: &Hello, opts: &RunOptions, hevc_allowed: bool) -> Result<Target, PlanError> {
+    let plan = choose_plan(
+        hello,
+        &opts.desktop,
+        opts.encoder,
+        force_h264(),
+        !hevc_allowed,
+        encoder::can_encode_hevc,
+    )?;
     Ok(Target {
         spec: DisplaySpec {
             name: output_name(hello.id.as_deref()),
@@ -246,7 +289,13 @@ struct EncodePipeline {
     encoded_rx: mpsc::Receiver<Encoded>,
     lost_tx: mpsc::UnboundedSender<String>,
     lost_rx: mpsc::UnboundedReceiver<String>,
+    /// An HEVC encoder that cannot open or keeps failing: sent once, after
+    /// which the thread stops encoding (the session falls back to H.264).
+    codec_failed_rx: mpsc::UnboundedReceiver<String>,
 }
+
+/// Consecutive failed `encode` calls after which an HEVC stream is given up.
+const HEVC_MAX_CONSECUTIVE_FAILURES: u32 = 30;
 
 impl EncodePipeline {
     fn start(mut settings: EncoderSettings) -> Result<Self> {
@@ -255,12 +304,17 @@ impl EncodePipeline {
         let (raw_tx, raw_rx) = latest::channel::<Frame>();
         let (encoded_tx, encoded_rx) = mpsc::channel::<Encoded>(4);
         let (lost_tx, lost_rx) = mpsc::unbounded_channel();
+        let (codec_failed_tx, codec_failed_rx) = mpsc::unbounded_channel::<String>();
         let enc_stop = stop.clone();
         let enc_force = force_idr.clone();
         let stage = ConvertStage::new();
         let enc_stage = stage.clone();
         spawn_reporting_panics("encode", lost_tx.clone(), move || {
             let mut encoder: Option<Encoder> = None;
+            let hevc = settings.codec == Codec::Hevc;
+            let mut failures = 0u32;
+            // HEVC failed and was reported: the session replaces this pipeline.
+            let mut gave_up = false;
             let mut last: Option<Frame> = None;
             // Newest captured frame not yet encoded. A frame that arrives
             // inside the rate cap waits here for its slot rather than
@@ -282,6 +336,11 @@ impl EncodePipeline {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(_) => break,
                 }
+                if gave_up {
+                    pending = None;
+                    last = None;
+                    continue;
+                }
                 let frame = if pending.is_some() {
                     if last_start.elapsed() < min_interval {
                         continue;
@@ -299,7 +358,17 @@ impl EncodePipeline {
                     .as_ref()
                     .is_none_or(|e| e.dimensions() != (w & !1, h & !1))
                 {
-                    match Encoder::new(w, h, settings) {
+                    #[cfg(debug_assertions)]
+                    let forced_failure =
+                        hevc && std::env::var_os("OD_FAIL_HEVC_SESSION").is_some_and(|v| v == "1");
+                    #[cfg(not(debug_assertions))]
+                    let forced_failure = false;
+                    let opened = if forced_failure {
+                        Err(anyhow::anyhow!("OD_FAIL_HEVC_SESSION=1"))
+                    } else {
+                        Encoder::new(w, h, settings)
+                    };
+                    match opened {
                         Ok(e) => {
                             info!(
                                 "encoder: {} {}x{} {:.1} Mbit/s, {} threads",
@@ -310,10 +379,16 @@ impl EncodePipeline {
                                 settings.threads
                             );
                             // A resize reopens the same backend without probing.
+                            debug_assert_eq!(e.codec(), settings.codec);
                             settings.backend = e.backend();
                             enc_stage.bind(&e);
                             encoder = Some(e);
                             enc_force.store(true, Ordering::Relaxed);
+                        }
+                        Err(e) if hevc => {
+                            let _ = codec_failed_tx.send(format!("encoder init failed: {e:#}"));
+                            gave_up = true;
+                            continue;
                         }
                         Err(e) => {
                             warn!("encoder init failed: {e:#}");
@@ -324,6 +399,7 @@ impl EncodePipeline {
                 let force = enc_force.swap(false, Ordering::Relaxed);
                 match encoder.as_mut().unwrap().encode(&frame, force) {
                     Ok(units) => {
+                        failures = 0;
                         if force && !units.iter().any(|u| u.unit.is_idr) {
                             warn!("encoder ignored the IDR request");
                             enc_force.store(true, Ordering::Relaxed);
@@ -333,6 +409,19 @@ impl EncodePipeline {
                             .any(|enc| encoded_tx.blocking_send(enc).is_err())
                         {
                             break;
+                        }
+                    }
+                    Err(e) if hevc => {
+                        failures += 1;
+                        if failures >= HEVC_MAX_CONSECUTIVE_FAILURES {
+                            let _ = codec_failed_tx.send(format!(
+                                "{failures} encodes failed in a row, the last: {e:#}"
+                            ));
+                            gave_up = true;
+                        } else {
+                            warn!("encode failed: {e:#}");
+                            // Retried as the next IDR, like any dropped picture.
+                            enc_force.store(true, Ordering::Relaxed);
                         }
                     }
                     Err(e) => warn!("encode failed: {e:#}"),
@@ -349,6 +438,7 @@ impl EncodePipeline {
             encoded_rx,
             lost_tx,
             lost_rx,
+            codec_failed_rx,
         })
     }
 
@@ -480,6 +570,7 @@ fn build(
     };
     let mut pipe = EncodePipeline::start(EncoderSettings {
         backend: opts.encoder,
+        codec: target.plan.stream.codec,
         bitrate_bps: (opts.bitrate_mbps * 1e6) as u32,
         max_fps: target.plan.stream.fps as f32,
         threads: opts.threads,
@@ -692,6 +783,8 @@ pub async fn run(addr: SocketAddr, backend: &mut dyn Backend, opts: RunOptions) 
     let mut shutdown = shutdown_signal()?;
     backend.set_cursor_visible(opts.cursor != CursorMode::Off);
     let mut losses = LossBudget::default();
+    // HEVC failed at some point in this run: H.264 from then on, reconnects too.
+    let mut hevc_failed = false;
     let mut backoff = Backoff::default();
     if let Some(id) = &opts.receiver_id {
         if let Some(held) = pre_dial_conflict(backend, id, opts.position)? {
@@ -719,6 +812,7 @@ pub async fn run(addr: SocketAddr, backend: &mut dyn Backend, opts: RunOptions) 
                     start,
                     shutdown.clone(),
                     &mut losses,
+                    &mut hevc_failed,
                     Some(addr),
                 )
                 .await;
@@ -761,6 +855,8 @@ pub async fn run(addr: SocketAddr, backend: &mut dyn Backend, opts: RunOptions) 
 enum DisplayEvent {
     Encoded(Encoded),
     Lost(String),
+    /// The HEVC encoder failed (could not open, or kept failing).
+    CodecFailed(String),
 }
 
 async fn next_display_event(active: &mut Option<Active>) -> DisplayEvent {
@@ -770,6 +866,7 @@ async fn next_display_event(active: &mut Option<Active>) -> DisplayEvent {
     tokio::select! {
         Some(e) = a.pipe.encoded_rx.recv() => DisplayEvent::Encoded(e),
         Some(why) = a.pipe.lost_rx.recv() => DisplayEvent::Lost(why),
+        Some(why) = a.pipe.codec_failed_rx.recv() => DisplayEvent::CodecFailed(why),
         // Encoder gone and capture silent: nothing more will come.
         else => std::future::pending().await,
     }
@@ -781,7 +878,7 @@ async fn send_stream_config<S: AsyncWrite + Unpin>(
     plan: &StreamPlan,
 ) -> Result<()> {
     let cfg = sess.stream_config(StreamConfig {
-        codec: plan.codec.into(),
+        codec: plan.codec.as_str().into(),
         width: plan.width,
         height: plan.height,
         frames_per_second: plan.fps,
@@ -882,6 +979,7 @@ fn extending_line(receiver: &str, info: &DisplayInfo, position: Position) -> Str
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn session<S: AsyncRead + AsyncWrite + Unpin>(
     mut stream: S,
     backend: &mut dyn Backend,
@@ -889,6 +987,8 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
     start: Instant,
     mut shutdown: watch::Receiver<bool>,
     losses: &mut LossBudget,
+    // Set once HEVC fails; lasts for the whole `run`, across reconnects.
+    hevc_failed: &mut bool,
     peer: Option<SocketAddr>,
 ) -> Result<SessionEnd> {
     let mut sess = SenderSession::new(SenderConfig::default());
@@ -961,6 +1061,28 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
                                 warn!("cannot recreate the virtual display: {e:#}; closing the connection");
                                 return Ok(SessionEnd::DisplayLost);
                             }
+                        }
+                        vec![]
+                    }
+                    DisplayEvent::CodecFailed(why) => {
+                        *hevc_failed = true;
+                        warn!("HEVC encoder failed ({why}); switching to H.264 for the rest of this run");
+                        // The newest hello decides; this is no display loss.
+                        let Some(h) = sess.hello().cloned() else { continue };
+                        let t = match target(&h, &ropts, false) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warn!("cannot plan an H.264 stream for this receiver: {e}; closing the connection");
+                                return Ok(SessionEnd::Incompatible);
+                            }
+                        };
+                        // The debouncer now holds the H.264 plan as running,
+                        // and drops any HEVC plan still waiting to settle.
+                        debounce = Debounce::new(desktop::HELLO_DEBOUNCE);
+                        let _ = debounce.on_hello(t.clone(), Instant::now());
+                        let cur = cursor_for(&ropts, backend, &sess);
+                        if let Err(e) = apply(&mut stream, &sess, backend, &mut active, t, &ropts, cur.as_ref()).await {
+                            return conflict_or(e, receiver_label(&h));
                         }
                         vec![]
                     }
@@ -1096,7 +1218,7 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
                             Some(opts.receiver_name.as_str()),
                             h.device.as_deref(),
                         ]);
-                        let t = match target(&h, &ropts) {
+                        let t = match target(&h, &ropts, !*hevc_failed) {
                             Ok(t) => t,
                             Err(e) => {
                                 warn!("cannot plan a desktop for this receiver: {e}; closing the connection");
@@ -1242,9 +1364,101 @@ mod tests {
         }
     }
 
+    fn cap(codec: &str, max: Option<(u32, u32)>) -> opendisplay_proto::control::VideoCap {
+        opendisplay_proto::control::VideoCap {
+            codec: codec.into(),
+            max_width: max.map(|m| m.0),
+            max_height: max.map(|m| m.1),
+            max_frame_rate: None,
+            max_pixels_per_second: None,
+        }
+    }
+
+    /// Offers H.264 up to 1280x720 and HEVC without a size limit, so the two
+    /// plans have different stream sizes.
+    fn offers_hevc() -> Hello {
+        Hello {
+            video_caps: Some(vec![cap("h264", Some((1280, 720))), cap("hevc", None)]),
+            ..hello()
+        }
+    }
+
+    /// The codec and stream size chosen, and the probes made.
+    fn chosen(
+        h: &Hello,
+        backend: encoder::Backend,
+        force_h264: bool,
+        hevc_failed: bool,
+        probe_ok: bool,
+    ) -> (Codec, (u32, u32), Vec<(u32, u32)>) {
+        let mut probed = Vec::new();
+        let plan = choose_plan(
+            h,
+            &DesktopOptions::default(),
+            backend,
+            force_h264,
+            hevc_failed,
+            |w, h| {
+                probed.push((w, h));
+                probe_ok
+            },
+        )
+        .unwrap();
+        let s = plan.stream;
+        (s.codec, (s.width, s.height), probed)
+    }
+
+    #[test]
+    fn hevc_is_chosen_when_offered_on_vaapi_and_the_probe_passes() {
+        use encoder::Backend::*;
+        let h = offers_hevc();
+        let (codec, size, probed) = chosen(&h, Vaapi, false, false, true);
+        assert_eq!(codec, Codec::Hevc);
+        // The probe saw the HEVC stream size, not the (smaller) H.264 one.
+        assert_eq!(probed, vec![size]);
+        let (_, h264_size, _) = chosen(&h, Vaapi, true, false, true);
+        assert_ne!(size, h264_size);
+        assert_eq!(size, (2532, 1170));
+    }
+
+    #[test]
+    fn h264_is_chosen_unless_hevc_is_a_candidate_and_probes_ok() {
+        use encoder::Backend::*;
+        let h = offers_hevc();
+        // The probe fails.
+        let (codec, size, probed) = chosen(&h, Vaapi, false, false, false);
+        assert_eq!((codec, size), (Codec::H264, (1280, 590)));
+        assert_eq!(probed.len(), 1);
+        // Forced H.264, HEVC failed earlier in the run, or another backend:
+        // not even probed.
+        for (backend, force, failed) in [
+            (Vaapi, true, false),
+            (Vaapi, false, true),
+            (X264, false, false),
+            (Openh264, false, false),
+            (Auto, false, false),
+            (V4l2m2m, false, false),
+        ] {
+            let (codec, size, probed) = chosen(&h, backend, force, failed, true);
+            assert_eq!(codec, Codec::H264, "{backend:?} {force} {failed}");
+            assert_eq!(size, (1280, 590));
+            assert!(probed.is_empty(), "{backend:?} {force} {failed}");
+        }
+        // The receiver does not offer HEVC (legacy, or H.264 only).
+        for caps in [None, Some(vec![cap("h264", None)])] {
+            let h = Hello {
+                video_caps: caps,
+                ..hello()
+            };
+            let (codec, _, probed) = chosen(&h, Vaapi, false, false, true);
+            assert_eq!(codec, Codec::H264);
+            assert!(probed.is_empty());
+        }
+    }
+
     #[test]
     fn target_names_the_output_after_the_receiver() {
-        let t = target(&hello(), &opts()).unwrap();
+        let t = target(&hello(), &opts(), true).unwrap();
         assert_eq!(t.spec.name, "od-3f9a1c");
         assert_eq!(
             (t.spec.width, t.spec.height, t.spec.hz),
@@ -1256,6 +1470,7 @@ mod tests {
                 ..hello()
             },
             &opts(),
+            true,
         )
         .unwrap();
         assert_eq!(anon.spec.name, "od-anon");
@@ -1263,7 +1478,7 @@ mod tests {
 
     #[test]
     fn adopted_outputs_stream_at_their_own_size() {
-        let t = target(&hello(), &opts()).unwrap();
+        let t = target(&hello(), &opts(), true).unwrap();
         let mut info = info_of(&t.spec);
         assert_eq!(stream_for(&info, &t), t.plan.stream);
         (info.width, info.height) = (1921, 1080);
@@ -1478,6 +1693,7 @@ mod tests {
                 Instant::now(),
                 shutdown_rx,
                 &mut budget,
+                &mut false,
                 None,
             )
             .await
@@ -1684,7 +1900,7 @@ mod tests {
         assert_eq!(r.position, Position::AutoLeft);
         assert_eq!(r.desktop.scale, crate::desktop::ScalePolicy::Fixed(2.0));
         assert_eq!(r.bitrate_mbps, 8.0, "the command line wins");
-        let t = target(&hello, &r).unwrap();
+        let t = target(&hello, &r, true).unwrap();
         assert_eq!((t.spec.scale, t.spec.position), (2.0, Position::AutoLeft));
         // Another receiver gets the options as they were.
         let other = base.for_receiver(&[Some("someone-else"), None, None]);
@@ -1767,6 +1983,7 @@ mod tests {
                 Instant::now(),
                 shutdown_rx,
                 &mut budget,
+                &mut false,
                 None,
             )
             .await
@@ -1863,6 +2080,7 @@ mod tests {
                 Instant::now(),
                 shutdown_rx,
                 &mut budget,
+                &mut false,
                 None,
             )
             .await
@@ -1933,6 +2151,7 @@ mod tests {
                 Instant::now(),
                 shutdown_rx,
                 &mut budget,
+                &mut false,
                 None,
             )
             .await
@@ -1991,6 +2210,7 @@ mod tests {
                 Instant::now(),
                 shutdown_rx,
                 &mut budget,
+                &mut false,
                 None,
             )
             .await
