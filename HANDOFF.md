@@ -130,6 +130,12 @@ Keep up with upstream: `~/projects/opendisplay-fork/tools/sync-upstream.sh`
 
 ## Gotchas learned the hard way
 
+* **Parallel agents building:** `/tmp` is a 7.6 GB tmpfs (RAM) on a 15 GB
+  machine; four review agents with `CARGO_TARGET_DIR=/tmp/...` filled it and
+  stalled. Agents use `tools/od-cargo <args>` instead of `cargo`: one build at
+  a time (flock), nice/ionice, 4 jobs, 2 test threads, 4 cores / 6 GB cap,
+  and the worktree's own `linux/target` on disk.
+
 * **CPU measurement:** use `/proc/<pid>/stat` (whole process). Summing
   `/proc/<pid>/task/*/stat` misses the converter's per-frame threads; it
   made VA-API look 3x better than it is.

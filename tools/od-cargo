@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Polite cargo for parallel agents on this laptop (8 cores, 15 GB, /tmp is RAM).
+#
+#   ~/projects/opendisplay-fork/tools/od-cargo <cargo args...>     # run from linux/
+#
+# * One cargo at a time across every caller (a lock): builds queue instead of
+#   fighting for CPU and memory, so each one makes progress, just later.
+# * Lowest CPU and IO priority, 4 compile jobs, tests on 2 threads.
+# * A systemd user scope caps it at 4 cores and 6 GB.
+# * Never builds into /tmp (RAM): CARGO_TARGET_DIR pointing there is ignored,
+#   so the worktree's own linux/target on disk is used.
+#
+# Env: OD_CARGO_JOBS (default 4), OD_CARGO_TEST_THREADS (default 2).
+set -euo pipefail
+
+case "${CARGO_TARGET_DIR:-}" in
+  /tmp/*) echo "od-cargo: ignoring CARGO_TARGET_DIR=${CARGO_TARGET_DIR} (/tmp is RAM)" >&2
+          unset CARGO_TARGET_DIR ;;
+esac
+
+export CARGO_BUILD_JOBS="${OD_CARGO_JOBS:-4}"
+export RUST_TEST_THREADS="${OD_CARGO_TEST_THREADS:-2}"
+lock="${XDG_RUNTIME_DIR:-/tmp}/od-cargo.lock"
+
+if ! flock -n "${lock}" true 2>/dev/null; then
+  echo "od-cargo: another build is running; waiting for it (this is expected)" >&2
+fi
+exec flock "${lock}" \
+  systemd-run --user --scope --quiet --same-dir \
+    -p CPUQuota=400% -p MemoryMax=6G -p MemorySwapMax=2G \
+    --setenv=CARGO_BUILD_JOBS --setenv=RUST_TEST_THREADS \
+    nice -n 19 ionice -c 3 cargo "$@"
