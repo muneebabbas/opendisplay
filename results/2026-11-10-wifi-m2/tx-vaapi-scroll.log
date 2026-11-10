@@ -1,0 +1,26 @@
+[2m2026-11-10T12:14:58.005123Z[0m [33m WARN[0m Hyprland 0.57.0 is newer than the tested 0.56.x; report problems with `od-sender doctor` output
+[2m2026-11-10T12:14:58.005194Z[0m [32m INFO[0m capture: ext-image-copy-capture (the standard capture protocol)
+[2m2026-11-10T12:14:58.006192Z[0m [32m INFO[0m backend hyprland: Hyprland 0.57.0 (IPC /run/user/1000/hypr/0aa6745f705f2c4b0a5004eb019ef76e5bbdb426_1793628615_593082903/.socket.sock) (creates outputs yes, resize in place yes, cursor metadata no, dmabuf no)
+[2m2026-11-10T12:14:58.079954Z[0m [32m INFO[0m connected to receiver 10.93.10.226:9000
+[2m2026-11-10T12:14:58.085208Z[0m [32m INFO[0m hello: 2388x1668 @120 scale 2 device Some("iPad") id Some("A0EC2343-F05E-4776-8903-8C62BB114896") pv 3
+[2m2026-11-10T12:14:58.085563Z[0m [32m INFO[0m plan: panel 2388x1668 @2 -> output 2388x1668 @120Hz scale 2 (1194x834 logical) -> h264 2388x1668 @60
+[2m2026-11-10T12:14:58.114972Z[0m [32m INFO[0m virtual display od-a0ec23 = 2388x1668 @120 scale 2 at 246,900 (1194x834 logical)
+[2m2026-11-10T12:14:58.116809Z[0m [32m INFO[0m capturing output od-a0ec23
+[2m2026-11-10T12:14:58.117301Z[0m [32m INFO[0m session: 2388x1668 shm formats [Argb8888, Xrgb8888]
+[2m2026-11-10T12:14:58.277798Z[0m [32m INFO[0m workspace 9 on od-a0ec23
+[2m2026-11-10T12:14:58.277836Z[0m [32m INFO[0m Extending onto iPad (A0EC2343-F05E-4776-8903-8C62BB114896): 1194x834 logical at 2x (od-a0ec23, right of your other displays). Ctrl+C to stop.
+[2m2026-11-10T12:14:58.407651Z[0m [32m INFO[0m encoder: VA-API (hardware), GPU colour conversion 2388x1668 35.0 Mbit/s, 8 threads
+[2m2026-11-10T12:15:01.531981Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"H.264","cur":0,"curLost":0,"dec50":0,"e2e50":29,"e2e95":71,"enc50":27,"fps":54,"hitch":19,"inp50":0,"int50":20,"int95":77,"mbps":7.1,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":4,"stalls":0,"transport":"WiFi"}
+[2m2026-11-10T12:15:03.081381Z[0m [32m INFO[0m sent 39.2 fps 4.7 Mbit/s | encode p50 18.2 ms p95 34.3 ms | capture->send p50 24.9 ms p95 40.4 ms | SenderCounters { video_frames: 196, video_bytes: 2921299, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T12:15:06.578993Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"H.264","cur":0,"curLost":0,"dec50":0,"e2e50":29,"e2e95":36,"enc50":23,"fps":58,"hitch":0,"inp50":0,"int50":17,"int95":19,"mbps":7.5,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":4,"stalls":0,"transport":"WiFi"}
+[2m2026-11-10T12:15:08.081550Z[0m [32m INFO[0m sent 58.2 fps 7.5 Mbit/s | encode p50 16.9 ms p95 18.0 ms | capture->send p50 22.4 ms p95 29.2 ms | SenderCounters { video_frames: 487, video_bytes: 7597254, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T12:15:11.601718Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"H.264","cur":0,"curLost":0,"dec50":0,"e2e50":28,"e2e95":36,"enc50":22,"fps":58,"hitch":0,"inp50":0,"int50":17,"int95":20,"mbps":7.6,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":6,"stalls":0,"transport":"WiFi"}
+[2m2026-11-10T12:15:13.080997Z[0m [32m INFO[0m sent 58.6 fps 7.5 Mbit/s | encode p50 15.7 ms p95 18.0 ms | capture->send p50 22.4 ms p95 29.5 ms | SenderCounters { video_frames: 780, video_bytes: 12310411, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T12:15:16.632177Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"H.264","cur":0,"curLost":0,"dec50":0,"e2e50":29,"e2e95":37,"enc50":22,"fps":59,"hitch":0,"inp50":0,"int50":17,"int95":19,"mbps":8,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":9,"stalls":0,"transport":"WiFi"}
+[2m2026-11-10T12:15:18.081303Z[0m [32m INFO[0m sent 59.0 fps 7.7 Mbit/s | encode p50 15.5 ms p95 17.8 ms | capture->send p50 22.1 ms p95 29.4 ms | SenderCounters { video_frames: 1075, video_bytes: 17111751, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T12:15:21.664332Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"H.264","cur":0,"curLost":0,"dec50":0,"e2e50":29,"e2e95":36,"enc50":22,"fps":59,"hitch":0,"inp50":0,"int50":17,"int95":18,"mbps":8.2,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":5,"stalls":0,"transport":"WiFi"}
+[2m2026-11-10T12:15:23.081125Z[0m [32m INFO[0m sent 59.4 fps 7.8 Mbit/s | encode p50 15.3 ms p95 17.3 ms | capture->send p50 22.1 ms p95 27.9 ms | SenderCounters { video_frames: 1372, video_bytes: 22006372, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T12:15:25.815095Z[0m [32m INFO[0m SIGINT: shutting down
+[2m2026-11-10T12:15:25.953600Z[0m [32m INFO[0m 1906 frames in 27.8s: first after 44 ms; interval p50 12.8 ms, p95 21.0 ms, min 6.5 ms
+[2m2026-11-10T12:15:25.971652Z[0m [32m INFO[0m removed virtual display od-a0ec23
+[2m2026-11-10T12:15:26.004659Z[0m [32m INFO[0m connection ended

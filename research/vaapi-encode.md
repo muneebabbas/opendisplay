@@ -144,7 +144,7 @@ cores, consistent with the iPad runs above.
   resize and rotation mid-session, AMD (Mesa: which RC mode FFmpeg falls back
   to), a machine with two GPUs.
 
-## Stage A2 (next): colour conversion on the GPU
+## Stage A2: colour conversion on the GPU (plan and first findings)
 
 Upload the captured BGRA and convert to NV12 with VA-API video processing
 (VPP) instead of swscale. With the `ffmpeg` CLI on raw 2388x1668 BGRA frames,
@@ -188,6 +188,70 @@ Options, in order of preference:
 Build impact: through FFmpeg this means libavfilter (`scale_vaapi`), which the
 static build disables and `ffmpeg-next`'s `filter` feature would pull in.
 Calling libva's VPP directly avoids that, but needs hand-written libva FFI.
+
+## Stage A2: result (2026-11-10)
+
+Branch `linux/vaapi-gpu-convert`. **The colour blocker was FFmpeg, not iHD.**
+
+**Why `scale_vaapi` gave BT.601.** iHD lists `VAProcColorStandardExplicit`
+among its output standards, and when it does, `libavfilter/vaapi_vpp.c`
+(`vaapi_vpp_fill_colour_standard`) always picks Explicit and copies the
+frame's primaries/transfer/matrix/range into `VAProcColorProperties`. In
+Explicit mode iHD (`VpSetColorStandardExplictly`,
+`media_softlet/linux/common/vp/ddi/ddi_vp_functions.cpp`) chooses the YUV
+matrix **from `colour_primaries` alone** (1 -> BT.709, 6 -> BT.601, 9 ->
+BT.2020, anything else -> BT.601 limited, range ignored).
+`out_color_matrix=bt709` leaves primaries unspecified (2), hence BT.601.
+`scale_vaapi=...:out_color_primaries=bt709` gives exact BT.709 too (checked
+with ffmpeg n9.0.2).
+
+**What od-sender does.** libva directly (spike: `research/vpp-spike/vpp.c`,
+240 parameter combinations in `out.txt`): source `VA_RT_FORMAT_RGB32`
+BGRX/RGBX, `surface_color_standard = SRGB`, input range FULL,
+`output_color_standard = BT709`, output range REDUCED. Output is
+byte-identical to swscale (red 63,102,240; white 235,128,128). Never use
+`None` (driver guesses by resolution: BT.601 up to 1280x720). The binding is
+hand-written (11 entry points, struct layouts asserted at compile time) and
+`dlopen`ed, so the static-FFmpeg tarball neither links nor needs libva. A
+startup self-check converts two patches and falls back to swscale if a
+driver gets the colours wrong (AMD untested).
+
+**Getting from 46 to 60 fps** (per-frame steps, debug log `RUST_LOG=debug`
+from `encoder/steps.rs`):
+
+| Step, 2388x1668 | First version | Final |
+|---|---|---|
+| Upload | ~5-7 ms (`av_hwframe_transfer_data`) | ~2.5-3 ms (vaDeriveImage, map, row copy) |
+| VPP submit | 0.4 ms | 0.4 ms |
+| `vaSyncSurface` after VPP | 3.5-4.5 ms | removed (source surface held until its packet is out) |
+| Encode (`send_frame`, waits for the GPU) | 8-14 ms | ~12.4 ms |
+
+The serial CPU/GPU round trips also kept the media GT at 450 MHz; it now
+runs at ~600 MHz. `quality` 1/4/7 made no measurable difference;
+`low_power` is not implemented for H.264 here.
+
+**Measured on the iPad** (Wi-Fi, 30 s windows, two passes, on battery;
+`results/2026-11-10-wifi-m2-final/`):
+
+| | CPU cores | fps sent / iPad | e2e p50 / p95 | encode p50 | battery |
+|---|---|---|---|---|---|
+| VA-API M2, scroll | 0.15 | 59.7 / 59 | 25 / 31 ms | 12.9 ms | ~15.0 W |
+| x264, scroll | 2.43 | 58.2 / 58 | 26 / 35 ms | 13.8 ms | ~18.9 W |
+| VA-API M2, video | 0.33 | 59.1 / 58.5 | 28 / 39 ms | 16.1 ms | ~13.4 W |
+| x264, video | 3.08 | 59.5 / 59 | 31 / 38 ms | 14.3 ms | ~14.4 W |
+
+Sender GPU use: video engine ~43%, VPP engine ~20%. Battery `power_now`
+is noisy (the idle baseline read 6.6 W and 9.8 W in the two passes), so
+the battery column is indicative only.
+
+**Left on the table:** the upload of frame N+1 could overlap the encode of
+frame N (convert-stage thread, ~2.5-3 ms); stage B removes the upload
+entirely. The encode at ~600 MHz is now the floor (~12 ms), relevant for
+120 fps. Known edge case: if `send_frame` fails after the VPP was queued,
+the source surface returns to the pool early (error path only). Destroying
+the VPP context makes later CPU-path uploads on the same device fail with
+EIO on iHD, so after a GPU failure the context is kept until the encoder
+closes (not investigated).
 
 ## Build and packaging
 

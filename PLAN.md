@@ -11,16 +11,20 @@ something is genuinely useful (see "Upstreaming" below).
 Move the whole video path onto the GPU: capture -> colour conversion ->
 encode, with the CPU only handling the compressed stream.
 
-| Target | Today (x264) | Today (VA-API, stage A) | Goal |
-|---|---|---|---|
-| Sender CPU, 60 fps full-motion video | 2.62 cores | 2.16 cores | **< 0.3 cores** |
-| Sender CPU, fast scrolling | 1.61 cores | 1.23 cores | **< 0.2 cores** |
-| End-to-end latency p50 (iPad) | 25 ms | 42 ms | **<= x264** |
-| fps under full motion | 59 | 46 | **60**, later **120** |
-| Colours | exact BT.709 | exact BT.709 | **exact BT.709** (flat-patch test) |
-| Battery draw while extending | not measured | not measured | measured, clearly lower |
+| Target | x264 | VA-API, stage A (CPU convert) | VA-API, M2 (GPU convert) | Goal |
+|---|---|---|---|---|
+| Sender CPU, 60 fps full-motion video | 3.08 cores | 2.16 cores | **0.33 cores** | **< 0.3 cores** |
+| Sender CPU, fast scrolling | 2.43 cores | 1.67 cores | **0.15 cores** | **< 0.2 cores** |
+| End-to-end latency p50 (iPad), video | 30 ms | 44 ms | **28 ms** | **<= x264** |
+| fps under full motion | 59.5 | 46 | **59** | **60**, later **120** |
+| Colours | exact BT.709 | exact BT.709 | exact BT.709 (tests) | **exact BT.709** (flat-patch test) |
+| Battery draw, scroll / video (idle ~6.6 W) | 18.9 / 14.4 W | 17.1 / 14.1 W | 15.0 / 13.4 W | measured, clearly lower |
 
-Numbers: `results/2026-11-09-ipad/`, method in `research/vaapi-encode.md`.
+Numbers (2026-11-10, iPad over Wi-Fi, 30 s windows, on battery): x264 and M2 from
+`results/2026-11-10-wifi-m2-final/` (two passes, consistent); stage A from
+`results/2026-11-10-wifi-m1/`. Battery `power_now` is noisy (the idle baseline
+moved 6.6 -> 9.8 W between passes): treat it as indicative only. Method in
+`research/vaapi-encode.md`.
 
 ## Milestones
 
@@ -31,7 +35,10 @@ Each milestone is a topic branch with a draft PR in the fork.
   always use the convert stage, docs. Three commits on upstream v1.30.2.
 * This branch, the iPad harness, the design doc.
 
-### M1 Measurement baseline
+### M1 Measurement baseline (done, 2026-11-10)
+* Harness: Wi-Fi target (`HOST:PORT`), battery `power_now`, GPU engine busy from
+  DRM fdinfo (`intel_gpu_top` does not support Xe; RAPL is root-only), idle
+  baseline line. Baseline in `results/2026-11-10-wifi-m1/`.
 * Measure **battery draw** (`/sys/class/power_supply/BAT0/power_now`,
   unplugged, iPad not charging from the laptop if possible) for idle /
   scroll / video, x264 vs VA-API. Battery is the real goal; CPU time is a proxy.
@@ -39,7 +46,11 @@ Each milestone is a topic branch with a draft PR in the fork.
   `intel_gpu_top -J`, keep whole-process CPU (never sum `/proc/<pid>/task`).
 * Write the baseline into `results/` and the target table above.
 
-### M2 GPU colour conversion (stage A2): the big CPU win
+### M2 GPU colour conversion (stage A2): the big CPU win (done, 2026-11-10)
+* Done on `linux/vaapi-gpu-convert` (6 commits on `linux/vaapi-encoder`): libva VPP
+  via a hand-written, dlopen'd FFI; exact BT.709; direct surface-mapping upload;
+  no CPU/GPU sync per frame. 60 fps at 0.15-0.33 cores. Details in
+  `research/vaapi-encode.md` "Stage A2: result". Not yet in `auto`.
 Branch `linux/vaapi-gpu-convert`, stacked on `linux/vaapi-encoder`.
 * Upload the captured BGRA to a VA surface and convert to NV12 with VA-API
   video processing (VPP) instead of swscale. CLI experiment: ~15 ms ->

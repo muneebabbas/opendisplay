@@ -11,7 +11,7 @@
 set -euo pipefail
 
 STACKS=(
-  linux/vaapi-encoder
+  linux/vaapi-gpu-convert
 )
 
 push=0
