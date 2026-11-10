@@ -184,9 +184,9 @@ impl Encoder {
     /// Encode one frame: 4-byte RGB pixels in the capture's byte order
     /// ([`crate::backend::PixelFormat`]), or already converted by a
     /// [`ConvertStage`]; a dmabuf frame is an error until capture can hand
-    /// GPU buffers to the VA-API backend. Returns the pictures the encoder produced, in order: usually
-    /// one, none when it skipped the frame or holds it, two when a lagging
-    /// encoder catches up.
+    /// GPU buffers to the VA-API backend. Returns the pictures the encoder
+    /// produced, in order: usually one, none when it skipped the frame or
+    /// holds it, two when a lagging encoder catches up.
     pub fn encode(&mut self, frame: &Frame, force_idr: bool) -> Result<Vec<Encoded>> {
         match (&frame.buf, &mut self.imp) {
             (

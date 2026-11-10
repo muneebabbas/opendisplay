@@ -19,6 +19,7 @@ use ff::format::Pixel;
 use ff::util::color;
 use ffmpeg_next as ff;
 use opendisplay_proto::video::{AccessUnit, NalType, access_units, nal_units};
+use tracing::warn;
 
 use super::convert::{Converter, band_count};
 use super::stage::{YuvFrame, new_video};
@@ -53,7 +54,9 @@ impl HwFrames {
             frames: std::ptr::null_mut(),
         };
         // SAFETY: out-pointers are valid; on failure FFmpeg leaves them null
-        // and Drop unrefs only what was created.
+        // and Drop unrefs only what was created. `av_hwframe_ctx_alloc`
+        // returned non-null, so its `data` is an `AVHWFramesContext` we may
+        // fill in until `av_hwframe_ctx_init`.
         unsafe {
             let err = av_hwdevice_ctx_create(
                 &mut hw.device,
@@ -227,9 +230,9 @@ impl FfmpegEncoder {
             }
             Kind::Vaapi => {
                 // The same targets as x264: quality 21 under a cap of the
-                // bitrate with a quarter-second buffer. No rc_mode is forced:
-                // FFmpeg picks QVBR where the driver has it (Intel iHD) and
-                // otherwise a bitrate mode the driver supports.
+                // bitrate with a quarter-second buffer. No rc_mode is forced,
+                // so FFmpeg picks one the driver supports: QVBR on Intel iHD
+                // (tested); other drivers are untested.
                 v.set_bit_rate(s.bitrate_bps as usize);
                 v.set_max_bit_rate(s.bitrate_bps as usize);
                 // SAFETY: plain field writes on a context we own and have not opened.
@@ -393,6 +396,7 @@ impl FfmpegEncoder {
             }
             if sets.is_empty() {
                 if self.param_sets.is_empty() {
+                    warn!("encoder: dropped an IDR without SPS/PPS (none seen yet)");
                     return None;
                 }
                 let mut with = self.param_sets.clone();
@@ -410,20 +414,17 @@ impl FfmpegEncoder {
 /// only that. VA-API surfaces are NV12, whatever the codec lists (it lists
 /// only the opaque `VAAPI` format).
 fn pick_format(codec: &ff::Codec, kind: Kind) -> Pixel {
-    if kind == Kind::Vaapi {
-        return Pixel::NV12;
-    }
+    let prefs: &[Pixel] = match kind {
+        Kind::X264 => &[Pixel::YUV420P, Pixel::NV12],
+        Kind::V4l2m2m => &[Pixel::NV12, Pixel::YUV420P],
+        Kind::Vaapi => return Pixel::NV12,
+    };
     let listed: Vec<Pixel> = codec
         .video()
         .ok()
         .and_then(|v| v.formats())
         .map(|f| f.collect())
         .unwrap_or_default();
-    let prefs: &[Pixel] = match kind {
-        Kind::X264 => &[Pixel::YUV420P, Pixel::NV12],
-        Kind::V4l2m2m => &[Pixel::NV12, Pixel::YUV420P],
-        Kind::Vaapi => unreachable!(),
-    };
     prefs
         .iter()
         .copied()
