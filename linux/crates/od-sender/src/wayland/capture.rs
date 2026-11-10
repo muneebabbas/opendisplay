@@ -257,6 +257,9 @@ struct State {
     failed: Option<WEnum<ext_image_copy_capture_frame_v1::FailureReason>>,
     frames_ready: u64,
     params: Option<ParamsOutcome>,
+    /// The serial of the params object [`State::params`] waits for; a late
+    /// answer to one given up on carries an older serial.
+    params_serial: u64,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
@@ -381,19 +384,25 @@ impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, u64> 
     }
 }
 
-impl Dispatch<zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1, ()> for State {
+impl Dispatch<zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1, u64> for State {
     fn event(
         state: &mut Self,
         _: &zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
         event: zwp_linux_buffer_params_v1::Event,
-        _: &(),
+        serial: &u64,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         use zwp_linux_buffer_params_v1::Event;
+        let current = *serial == state.params_serial;
         match event {
-            Event::Created { buffer } => state.params = Some(ParamsOutcome::Created(buffer)),
-            Event::Failed => state.params = Some(ParamsOutcome::Failed),
+            Event::Created { buffer } if current => {
+                state.params = Some(ParamsOutcome::Created(buffer))
+            }
+            // An answer after the allocation gave up (timeout or stop):
+            // nobody owns this buffer.
+            Event::Created { buffer } => buffer.destroy(),
+            Event::Failed if current => state.params = Some(ParamsOutcome::Failed),
             _ => {}
         }
     }
@@ -633,6 +642,7 @@ pub fn capture(
         failed: None,
         frames_ready: 0,
         params: None,
+        params_serial: 0,
     };
     queue.roundtrip(&mut st)?;
     queue.roundtrip(&mut st)?;
@@ -1013,7 +1023,9 @@ fn alloc_gpu(
         Ok(b) => b,
         Err(e) => return Ok(GpuAlloc::Broken(format!("{e:#} on {}", node.display()))),
     };
-    let params = linux_dmabuf.create_params(qh, ());
+    st.params_serial += 1;
+    st.params = None;
+    let params = linux_dmabuf.create_params(qh, st.params_serial);
     for (i, p) in gbm.planes.iter().enumerate() {
         params.add(
             p.fd.as_fd(),
@@ -1027,7 +1039,6 @@ fn alloc_gpu(
     // The asynchronous create: a buffer the compositor cannot import comes
     // back as `failed`, where create_immed may be a protocol error that
     // ends the connection.
-    st.params = None;
     params.create(
         gbm.width as i32,
         gbm.height as i32,
@@ -1041,6 +1052,7 @@ fn alloc_gpu(
         }
         if stop.load(Ordering::Relaxed) || st.session.stopped {
             params.destroy();
+            st.params_serial += 1;
             return Ok(GpuAlloc::Interrupted);
         }
         if Instant::now() >= deadline {
@@ -1049,6 +1061,7 @@ fn alloc_gpu(
         dispatch_with_timeout(conn, queue, st, Duration::from_millis(50))?;
     };
     params.destroy();
+    st.params_serial += 1;
     let modifier = modifier_name(gbm.modifier);
     match outcome {
         Some(ParamsOutcome::Created(buffer)) => Ok(GpuAlloc::Done(GpuBuffer {
@@ -1204,8 +1217,12 @@ fn pick_dmabuf(c: &Constraints) -> Result<DmabufChoice, String> {
 /// implicit choice) is dropped, as it may be a compressed layout.
 fn importable_modifiers(offered: &[u64]) -> Vec<u64> {
     // Development hook (`od-sender dev capture-test --gpu-linear`): only
-    // LINEAR buffers, which the CPU can read back to compare pixels.
+    // LINEAR buffers, which the CPU can read back to compare pixels. Debug
+    // builds only, like OD_FAIL_DMABUF_IMPORT: never on a release stream.
+    #[cfg(debug_assertions)]
     let linear_only = std::env::var_os("OD_DEV_LINEAR_CAPTURE").is_some_and(|v| v == "1");
+    #[cfg(not(debug_assertions))]
+    let linear_only = false;
     let mut out: Vec<u64> = Vec::new();
     for &m in offered {
         if linear_only && m != 0 {
