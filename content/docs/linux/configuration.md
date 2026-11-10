@@ -91,9 +91,11 @@ receiver's decoder advertises them, and never above its panel rate. Lower it
 hardware encoder through FFmpeg, where the machine has one), `x264`,
 `openh264`. `vaapi` (GPUs through FFmpeg, tested on Intel; needs the GPU's
 VA-API driver and an FFmpeg built with VA-API) is never chosen by `auto` yet:
-it still converts colours on the CPU and adds some latency, so it only saves
-about a fifth of the sender's CPU. Naming one forces it. `od-sender doctor`
-lists which encoders open on this machine.
+it encodes and converts colours on the GPU, which takes most of the load off
+the CPU, but it can add some latency at the GPU's power-saving clocks. Where
+the driver cannot convert colours, the CPU does. Naming one forces it.
+`od-sender doctor` lists which encoders open on this machine, and which
+conversion VA-API uses.
 
 ### cursor
 

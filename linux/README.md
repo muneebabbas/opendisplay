@@ -356,9 +356,9 @@ rm -r ~/.config/opendisplay                              # optional: your settin
 * **CPU encoding.** By default encoding runs on the CPU with x264. A 5K
   iMac streamed at 4096x2304 costs noticeably more CPU and shows about 55-70
   ms end to end, against ~20 ms for an iPhone. `--encoder vaapi` moves the
-  encode itself to the GPU, but colour conversion still runs on the CPU and
-  is most of the cost, so it saves about a fifth of the sender's CPU and adds
-  some latency; it is not chosen automatically yet.
+  encode and the colour conversion to the GPU, which takes most of the load
+  off the CPU, but it can add some latency at the GPU's power-saving clocks
+  and is not chosen automatically yet.
 * **Sway, KDE Plasma and GNOME are untested on real desktops.** See
   [Supported setups](#supported-setups).
 * **Android** is untested beyond a first session: touch, scroll, rotation,
