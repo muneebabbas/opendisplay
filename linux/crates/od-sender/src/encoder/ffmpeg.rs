@@ -1,5 +1,6 @@
 //! H.264 through the system FFmpeg: libx264 in software, a V4L2 mem2mem
-//! hardware encoder, or VA-API (Intel/AMD). Capture hands us 4-byte RGB
+//! hardware encoder, or VA-API (Intel/AMD), which also encodes HEVC
+//! (`hevc_vaapi`, same settings, Main profile). Capture hands us 4-byte RGB
 //! pixels in the compositor's byte order ([`PixelFormat`]); swscale converts
 //! them to the encoder's 4:2:0 format with BT.709 limited-range
 //! coefficients, which the stream's VUI announces so the receiver converts
@@ -20,7 +21,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ff::format::Pixel;
 use ff::util::color;
 use ffmpeg_next as ff;
-use opendisplay_proto::video::{AccessUnit, NalType, access_units, nal_units};
+use opendisplay_proto::video::{AccessUnit, Codec, NalType, access_units_for, nal_units};
 use tracing::{info, warn};
 
 use super::convert::{Converter, band_count};
@@ -119,6 +120,7 @@ struct InFlight {
 }
 
 pub struct FfmpegEncoder {
+    codec: Codec,
     enc: ff::encoder::Video,
     convert: Converter,
     yuv: ff::frame::Video,
@@ -126,8 +128,9 @@ pub struct FfmpegEncoder {
     /// Frames handed to the encoder whose packet has not come out yet, in
     /// pts order. A hardware encoder may return a packet one call late.
     in_flight: VecDeque<InFlight>,
-    /// Parameter sets from the last IDR, prepended to any IDR that arrives
-    /// without them (§5.1). x264 repeats them itself; V4L2 drivers vary.
+    /// Parameter sets from the last IDR (SPS and PPS; VPS too for HEVC),
+    /// prepended to any IDR that arrives without them (§5.1). x264 repeats
+    /// them itself; V4L2 drivers vary.
     param_sets: Vec<u8>,
     /// VA-API only: where converted frames are uploaded before encoding.
     /// Declared after `enc` so the codec drops its references first.
@@ -155,13 +158,15 @@ fn init() {
 }
 
 impl FfmpegEncoder {
-    /// `width`/`height` are already even.
+    /// `width`/`height` are already even. HEVC is VA-API only.
     pub fn new(kind: Kind, width: u32, height: u32, s: EncoderSettings) -> Result<Self> {
         init();
-        let name = match kind {
-            Kind::X264 => "libx264",
-            Kind::V4l2m2m => "h264_v4l2m2m",
-            Kind::Vaapi => "h264_vaapi",
+        let name = match (kind, s.codec) {
+            (Kind::X264, Codec::H264) => "libx264",
+            (Kind::V4l2m2m, Codec::H264) => "h264_v4l2m2m",
+            (Kind::Vaapi, Codec::H264) => "h264_vaapi",
+            (Kind::Vaapi, Codec::Hevc) => "hevc_vaapi",
+            (_, Codec::Hevc) => bail!("{kind:?} does not encode HEVC"),
         };
         let codec = ff::encoder::find_by_name(name)
             .ok_or_else(|| anyhow!("this FFmpeg build has no {name}"))?;
@@ -251,6 +256,10 @@ impl FfmpegEncoder {
                 opts.set("async_depth", "1");
                 // No encoder-identification SEI in every IDR.
                 opts.set("sei", "0");
+                if s.codec == Codec::Hevc {
+                    // 8-bit 4:2:0: what the receivers decode into NV12.
+                    opts.set("profile", "main");
+                }
             }
         }
         let enc = v
@@ -264,6 +273,7 @@ impl FfmpegEncoder {
         let gpu = hw.as_ref().and_then(gpu_convert);
 
         Ok(Self {
+            codec: s.codec,
             enc,
             convert,
             yuv,
@@ -479,13 +489,13 @@ impl FfmpegEncoder {
     }
 
     /// One packet is one picture; normalize it to an access unit and make
-    /// sure an IDR carries SPS and PPS.
+    /// sure an IDR carries its parameter sets (SPS and PPS; VPS too for HEVC).
     fn access_unit(&mut self, data: &[u8]) -> Option<AccessUnit> {
-        let mut unit = access_units(data).pop()?;
+        let mut unit = access_units_for(self.codec, data).pop()?;
         if unit.is_idr {
             let mut sets = Vec::new();
             for nal in nal_units(&unit.annexb) {
-                if matches!(NalType::of(nal), Some(NalType::Sps | NalType::Pps)) {
+                if NalType::of_codec(self.codec, nal).is_some_and(NalType::is_parameter_set) {
                     sets.extend_from_slice(&[0, 0, 0, 1]);
                     sets.extend_from_slice(nal);
                 }
@@ -553,8 +563,13 @@ mod tests {
 
     /// Opens VA-API, or explains why the test is skipped (no GPU in CI).
     fn vaapi(w: u32, h: u32) -> Option<FfmpegEncoder> {
+        vaapi_codec(Codec::H264, w, h)
+    }
+
+    fn vaapi_codec(codec: Codec, w: u32, h: u32) -> Option<FfmpegEncoder> {
         let s = EncoderSettings {
             backend: Backend::Vaapi,
+            codec,
             bitrate_bps: 8_000_000,
             max_fps: 60.0,
             threads: 1,
@@ -642,6 +657,155 @@ mod tests {
     #[test]
     fn vaapi_gpu_idrs_only_on_demand_and_decode_as_bt709() {
         idrs_only_on_demand_and_decode_as_bt709(true);
+    }
+
+    /// FFmpeg's software decoder for `wire`, or why the test skips.
+    fn decoder(wire: Codec) -> Option<ff::Codec> {
+        let id = match wire {
+            Codec::H264 => ff::codec::Id::H264,
+            Codec::Hevc => ff::codec::Id::HEVC,
+        };
+        let found = ff::decoder::find(id);
+        if found.is_none() {
+            eprintln!("skipped: this FFmpeg has no {wire} decoder");
+        }
+        found
+    }
+
+    fn hevc_types(annexb: &[u8]) -> Vec<u8> {
+        nal_units(annexb).map(|n| (n[0] >> 1) & 0x3f).collect()
+    }
+
+    /// Twelve HEVC frames with IDRs on demand only (frames 0 and 7), decoded
+    /// by FFmpeg's HEVC decoder: every IDR is type 19/20 and starts with
+    /// VPS, SPS, PPS; the others are plain pictures.
+    fn hevc_idrs_only_on_demand_with_parameter_sets(gpu: bool) {
+        let (w, h) = (320, 240);
+        let Some(mut e) = vaapi_codec(Codec::Hevc, w, h) else {
+            return;
+        };
+        if gpu && !e.gpu_convert() {
+            eprintln!("skipped: no GPU colour conversion here");
+            return;
+        }
+        if !gpu {
+            e.gpu_failed = true;
+        }
+        let Some(codec) = decoder(Codec::Hevc) else {
+            return;
+        };
+        let mut dec = ff::codec::context::Context::new_with_codec(codec)
+            .decoder()
+            .video()
+            .unwrap();
+        let mut idrs = Vec::new();
+        let mut decoded = 0;
+        for i in 0..12 {
+            let (px, stride) = frame(w, h, i);
+            let force = i == 0 || i == 7;
+            let units = e
+                .encode(&px, stride, PixelFormat::Xrgb8888, force, Instant::now())
+                .unwrap();
+            assert_eq!(units.len(), 1, "frame {i}");
+            for u in units {
+                let types = hevc_types(&u.unit.annexb);
+                if u.unit.is_idr {
+                    idrs.push(i);
+                    assert!(
+                        types.starts_with(&[32, 33, 34]),
+                        "frame {i}: IDR starts with {types:?}"
+                    );
+                    assert!(
+                        types[3..].iter().all(|t| matches!(t, 19 | 20)),
+                        "frame {i}: {types:?}"
+                    );
+                } else {
+                    assert!(
+                        types.iter().all(|t| *t < 16),
+                        "frame {i}: not an IDR but {types:?}"
+                    );
+                }
+                dec.send_packet(&ff::Packet::copy(&u.unit.annexb)).unwrap();
+                let mut out = ff::frame::Video::empty();
+                while dec.receive_frame(&mut out).is_ok() {
+                    assert_eq!((out.width(), out.height()), (w, h));
+                    assert_eq!(out.color_primaries(), color::Primaries::BT709);
+                    assert_eq!(out.color_range(), color::Range::MPEG);
+                    decoded += 1;
+                }
+            }
+        }
+        assert_eq!(idrs, [0, 7]);
+        dec.send_eof().unwrap();
+        let mut out = ff::frame::Video::empty();
+        while dec.receive_frame(&mut out).is_ok() {
+            decoded += 1;
+        }
+        assert_eq!(decoded, 12);
+    }
+
+    #[test]
+    fn vaapi_hevc_idrs_only_on_demand_with_parameter_sets() {
+        hevc_idrs_only_on_demand_with_parameter_sets(false);
+    }
+
+    #[test]
+    fn vaapi_hevc_gpu_idrs_only_on_demand_with_parameter_sets() {
+        hevc_idrs_only_on_demand_with_parameter_sets(true);
+    }
+
+    #[test]
+    fn only_vaapi_encodes_hevc() {
+        let s = EncoderSettings {
+            backend: Backend::X264,
+            codec: Codec::Hevc,
+            bitrate_bps: 2_000_000,
+            max_fps: 60.0,
+            threads: 1,
+        };
+        for kind in [Kind::X264, Kind::V4l2m2m] {
+            let e = FfmpegEncoder::new(kind, 320, 240, s).err().unwrap();
+            assert!(format!("{e:#}").contains("does not encode HEVC"), "{e:#}");
+        }
+    }
+
+    #[test]
+    fn vaapi_hevc_decodes_at_the_encoded_size() {
+        // HEVC codes in CTB multiples and crops: the decoder must still see
+        // the size asked for, including sizes that are not 16 or 64 aligned.
+        for (w, h) in [(320, 240), (240, 320), (1194, 834), (1000, 776)] {
+            let Some(mut e) = vaapi_codec(Codec::Hevc, w, h) else {
+                return;
+            };
+            let Some(codec) = decoder(Codec::Hevc) else {
+                return;
+            };
+            let mut dec = ff::codec::context::Context::new_with_codec(codec)
+                .decoder()
+                .video()
+                .unwrap();
+            let mut sizes = Vec::new();
+            for i in 0..3 {
+                let (px, stride) = frame(w, h, i);
+                let units = e
+                    .encode(&px, stride, PixelFormat::Xrgb8888, i == 0, Instant::now())
+                    .unwrap();
+                assert_eq!(units.first().is_some_and(|u| u.unit.is_idr), i == 0);
+                for u in units {
+                    dec.send_packet(&ff::Packet::copy(&u.unit.annexb)).unwrap();
+                    let mut out = ff::frame::Video::empty();
+                    while dec.receive_frame(&mut out).is_ok() {
+                        sizes.push((out.width(), out.height()));
+                    }
+                }
+            }
+            dec.send_eof().unwrap();
+            let mut out = ff::frame::Video::empty();
+            while dec.receive_frame(&mut out).is_ok() {
+                sizes.push((out.width(), out.height()));
+            }
+            assert_eq!(sizes, vec![(w, h); 3], "{w}x{h}");
+        }
     }
 
     #[test]
@@ -762,22 +926,34 @@ mod tests {
 
     #[test]
     fn vaapi_gpu_encodes_the_right_colours() {
-        let (w, h) = ((PATCHES.len() * BLOCK) as u32, BLOCK as u32);
-        let Some(mut e) = vaapi(w, h) else { return };
+        gpu_encodes_the_right_colours(Codec::H264);
+    }
+
+    #[test]
+    fn vaapi_hevc_gpu_encodes_the_right_colours() {
+        gpu_encodes_the_right_colours(Codec::Hevc);
+    }
+
+    fn gpu_encodes_the_right_colours(wire: Codec) {
+        // Every row of patches repeated: the HEVC encoder refuses a picture
+        // as short as one block (Intel iHD fails to open it at 64 rows).
+        let rows = 3;
+        let (w, h) = ((PATCHES.len() * BLOCK) as u32, (rows * BLOCK) as u32);
+        let Some(mut e) = vaapi_codec(wire, w, h) else {
+            return;
+        };
         if !e.gpu_convert() {
             eprintln!("skipped: no GPU colour conversion here");
             return;
         }
-        let Some(codec) = ff::decoder::find(ff::codec::Id::H264) else {
-            eprintln!("skipped: this FFmpeg has no H.264 decoder");
-            return;
-        };
+        let Some(codec) = decoder(wire) else { return };
         for format in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888] {
             let mut dec = ff::codec::context::Context::new_with_codec(codec)
                 .decoder()
                 .video()
                 .unwrap();
-            let (px, stride) = patches(format);
+            let (row, stride) = patches(format);
+            let px = row.repeat(rows);
             let mut last = None;
             for i in 0..3 {
                 for u in e

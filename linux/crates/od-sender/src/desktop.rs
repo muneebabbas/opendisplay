@@ -5,20 +5,23 @@
 //!
 //! * Panel facts come from `hello.panel` when it is valid (PROTOCOL.md §6.7),
 //!   else from the deprecated `pixelsWide/High/scale`.
-//! * The stream is the output raster bounded by the panel's pixels, the
-//!   legacy `maxEncodeWide/High` ceiling, the `videoCaps` H.264 entries and
-//!   the H.264 High@L5.2 frame-size and macroblock-rate limits (§6.5).
+//! * The codec is the caller's choice ([`preferred_codec`] picks HEVC when
+//!   the receiver offers it and the sender can encode it, else H.264).
+//! * The stream is the output raster bounded by the panel's pixels and the
+//!   `videoCaps` entries for that codec (§6.5). For H.264 it is also bounded
+//!   by the legacy `maxEncodeWide/High` ceiling and the High@L5.2 frame-size
+//!   and macroblock-rate limits; absent `videoCaps` is the legacy contract,
+//!   valid for H.264 only. HEVC is bounded by its own entry alone: the legacy
+//!   ceiling and the H.264 level limits do not apply to it.
 //! * When that stream is smaller than the default output, the output is
 //!   shrunk to the stream, so capture is 1:1 and the receiver scales once.
-//! * Only H.264: there is no HEVC encoder on this platform (§3.6).
 
 use std::fmt;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use opendisplay_proto::control::{Hello, PanelFacts, VideoCap};
-
-pub const H264: &str = "h264";
+use opendisplay_proto::video::Codec;
 
 /// H.264 High@L5.2 MaxFS (macroblocks per frame).
 const MAX_MACROBLOCKS_PER_FRAME: u64 = 36_864;
@@ -104,7 +107,7 @@ impl OutputMode {
 /// The stream to encode; announced in `streamConfig`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamPlan {
-    pub codec: &'static str,
+    pub codec: Codec,
     pub width: u32,
     pub height: u32,
     /// A ceiling: the encoder's throughput decides the delivered rate.
@@ -127,9 +130,10 @@ pub struct DesktopPlan {
 pub enum PlanError {
     /// Neither `panel` nor the deprecated fields give a usable size.
     InvalidSize { width: u32, height: u32 },
-    /// `videoCaps` is present and lists no H.264 entry.
-    NoH264,
-    /// Every H.264 entry (or the legacy ceiling) rules out any stream.
+    /// The codec has no usable entry: `videoCaps` lists none for it, or is
+    /// absent (the legacy contract is H.264 only).
+    NoCodecEntry(Codec),
+    /// Every entry for the codec (or the legacy ceiling) rules out any stream.
     NoCompatibleConfiguration,
 }
 
@@ -139,15 +143,24 @@ impl fmt::Display for PlanError {
             Self::InvalidSize { width, height } => {
                 write!(f, "receiver announced an unusable size {width}x{height}")
             }
-            Self::NoH264 => write!(f, "receiver does not offer H.264"),
+            Self::NoCodecEntry(codec) => {
+                write!(f, "receiver does not offer {}", codec_name(*codec))
+            }
             Self::NoCompatibleConfiguration => {
-                write!(f, "receiver advertised no usable H.264 configuration")
+                write!(f, "receiver advertised no usable stream configuration")
             }
         }
     }
 }
 
 impl std::error::Error for PlanError {}
+
+fn codec_name(codec: Codec) -> &'static str {
+    match codec {
+        Codec::H264 => "H.264",
+        Codec::Hevc => "HEVC",
+    }
+}
 
 impl fmt::Display for DesktopPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -223,8 +236,23 @@ fn panel_hz(hello: &Hello) -> u32 {
         .clamp(30, 240)
 }
 
-/// Plan the output and the stream for a receiver.
-pub fn plan(hello: &Hello, opts: &DesktopOptions) -> Result<DesktopPlan, PlanError> {
+/// The codec to stream: HEVC when the sender can encode it and the receiver
+/// lists it in `videoCaps`, else H.264. Absent `videoCaps` (the legacy
+/// contract) never implies HEVC.
+pub fn preferred_codec(hello: &Hello, sender_encodes_hevc: bool) -> Codec {
+    let offered = hello.video_caps.as_ref().is_some_and(|caps| {
+        caps.iter()
+            .any(|c| Codec::from_token(&c.codec) == Some(Codec::Hevc))
+    });
+    if sender_encodes_hevc && offered {
+        Codec::Hevc
+    } else {
+        Codec::H264
+    }
+}
+
+/// Plan the output and the stream for a receiver, for `codec`.
+pub fn plan(hello: &Hello, opts: &DesktopOptions, codec: Codec) -> Result<DesktopPlan, PlanError> {
     let (source, facts) = match hello.panel_facts() {
         Some(f) => (FactsSource::Panel, f),
         None => {
@@ -272,7 +300,7 @@ pub fn plan(hello: &Hello, opts: &DesktopOptions) -> Result<DesktopPlan, PlanErr
     };
     let explicit = desktop.w > presentable.w || desktop.h > presentable.h;
 
-    let limits = Limits::from_hello(hello, presentable, opts);
+    let limits = Limits::from_hello(hello, presentable, opts, codec);
     let (best, best_fps) = limits.select(desktop)?;
     let desktop_even = Size {
         w: even(desktop.w),
@@ -310,7 +338,7 @@ pub fn plan(hello: &Hello, opts: &DesktopOptions) -> Result<DesktopPlan, PlanErr
             scale,
         },
         stream: StreamPlan {
-            codec: H264,
+            codec,
             width: stream.w,
             height: stream.h,
             fps,
@@ -344,11 +372,12 @@ fn mac_desktop(facts: &PanelFacts) -> (Size, f64) {
     )
 }
 
-/// One `videoCaps` H.264 entry, or the legacy contract (`None`).
+/// One `videoCaps` entry for the codec, or the legacy contract (`None`).
 type Envelope = Option<VideoCap>;
 
 /// Everything that bounds the stream, independent of the source raster.
 struct Limits {
+    codec: Codec,
     presentable: Size,
     legacy_ceiling: Option<Size>,
     envelopes: Result<Vec<Envelope>, PlanError>,
@@ -356,25 +385,27 @@ struct Limits {
 }
 
 impl Limits {
-    fn from_hello(hello: &Hello, presentable: Size, opts: &DesktopOptions) -> Self {
+    fn from_hello(hello: &Hello, presentable: Size, opts: &DesktopOptions, codec: Codec) -> Self {
+        // The legacy `maxEncodeWide/High` ceiling is an H.264 contract.
         let legacy_ceiling = match (hello.max_encode_wide, hello.max_encode_high) {
-            (Some(w), Some(h)) if w > 0 && h > 0 => Some(Size { w, h }),
+            (Some(w), Some(h)) if w > 0 && h > 0 && codec == Codec::H264 => Some(Size { w, h }),
             _ => None,
         };
-        // Absent `videoCaps` is the legacy H.264 contract.
-        let envelopes = match &hello.video_caps {
-            None => Ok(vec![None]),
-            Some(caps) => {
-                let h264: Vec<Envelope> = caps
+        let envelopes = match (&hello.video_caps, codec) {
+            // Absent `videoCaps` is the legacy H.264 contract only.
+            (None, Codec::H264) => Ok(vec![None]),
+            (None, Codec::Hevc) => Err(PlanError::NoCodecEntry(codec)),
+            (Some(caps), _) => {
+                let entries: Vec<Envelope> = caps
                     .iter()
-                    .filter(|c| c.codec.eq_ignore_ascii_case(H264))
+                    .filter(|c| Codec::from_token(&c.codec) == Some(codec))
                     .cloned()
                     .map(Some)
                     .collect();
-                if h264.is_empty() {
-                    Err(PlanError::NoH264)
+                if entries.is_empty() {
+                    Err(PlanError::NoCodecEntry(codec))
                 } else {
-                    Ok(h264)
+                    Ok(entries)
                 }
             }
         };
@@ -383,6 +414,7 @@ impl Limits {
             .max_fps
             .map_or(panel, |cap| (cap.round().max(1.0) as u32).min(panel));
         Limits {
+            codec,
             presentable,
             legacy_ceiling,
             envelopes,
@@ -428,13 +460,15 @@ impl Limits {
         if let Some(cap) = cap {
             size = fit(size, cap.max_width, cap.max_height);
         }
-        size = fit_h264_level_frame(size);
+        if self.codec == Codec::H264 {
+            size = fit_h264_level_frame(size);
+        }
         let pps = cap.and_then(|c| c.max_pixels_per_second);
         if let Some(pps) = pps {
             size = fit_pixels(size, pps)?;
         }
         // The panel rate is a display fact, not a decoder promise (§6.1):
-        // above the legacy 60 only when this H.264 entry says so.
+        // above the legacy 60 only when this entry says so.
         let decoder_fps = cap.and_then(|c| c.max_frame_rate).unwrap_or(DEFAULT_FPS);
         let mut fps = self.target_fps.min(decoder_fps);
         if let Some(pps) = pps {
@@ -443,7 +477,10 @@ impl Limits {
         if fps == 0 {
             return None;
         }
-        Some((size, safe_h264_frame_rate(size, fps)))
+        if self.codec == Codec::H264 {
+            fps = safe_h264_frame_rate(size, fps);
+        }
+        Some((size, fps))
     }
 }
 
@@ -623,7 +660,7 @@ mod tests {
     type Expect = ((u32, u32, u32, f64, bool), (u32, u32, u32));
 
     fn check(name: &str, h: &Hello, o: &DesktopOptions, source: FactsSource, want: Expect) {
-        let p = plan(h, o).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let p = plan(h, o, Codec::H264).unwrap_or_else(|e| panic!("{name}: {e}"));
         let got = (
             (
                 p.output.width,
@@ -636,7 +673,7 @@ mod tests {
         );
         assert_eq!(got, want, "{name} {:?}: {p}", o.scale);
         assert_eq!(p.source, source, "{name}");
-        assert_eq!(p.stream.codec, H264);
+        assert_eq!(p.stream.codec, Codec::H264);
         // Invariants: the stream never exceeds the output or the panel, and
         // stays within High@L5.2.
         assert!(p.stream.width <= p.output.width && p.stream.height <= p.output.height);
@@ -797,7 +834,7 @@ mod tests {
         );
         // A sub-1 legacy scale is clamped as before.
         let h = hello(r#"{"type":"hello","pixelsWide":1920,"pixelsHigh":1080,"scale":0}"#);
-        assert_eq!(plan(&h, &PASS).unwrap().output.scale, 1.0);
+        assert_eq!(plan(&h, &PASS, Codec::H264).unwrap().output.scale, 1.0);
     }
 
     #[test]
@@ -814,7 +851,7 @@ mod tests {
         );
         let h = hello(r#"{"type":"hello","pixelsWide":0,"pixelsHigh":0,"scale":2}"#);
         assert_eq!(
-            plan(&h, &PASS),
+            plan(&h, &PASS, Codec::H264),
             Err(PlanError::InvalidSize {
                 width: 0,
                 height: 0
@@ -841,15 +878,15 @@ mod tests {
             scale: ScalePolicy::Passthrough,
             max_fps: Some(30.0),
         };
-        assert_eq!(plan(&h, &o).unwrap().stream.fps, 30);
+        assert_eq!(plan(&h, &o, Codec::H264).unwrap().stream.fps, 30);
         // A 120 Hz panel is a display fact, not a decoder promise: the
         // legacy contract (no videoCaps) streams at most 60, like the Mac.
         h.video_caps = None;
-        let p = plan(&h, &PASS).unwrap();
+        let p = plan(&h, &PASS, Codec::H264).unwrap();
         assert_eq!((p.output.hz, p.stream.fps), (120, 60));
         let mut small = fixture!("iphone-15-pro-landscape");
         small.video_caps = None;
-        assert_eq!(plan(&small, &PASS).unwrap().stream.fps, 60);
+        assert_eq!(plan(&small, &PASS, Codec::H264).unwrap().stream.fps, 60);
         // An H.264 entry promising 120 lifts the cap up to the panel rate...
         let h264_at = |fps| {
             Some(vec![VideoCap {
@@ -861,16 +898,20 @@ mod tests {
             }])
         };
         small.video_caps = h264_at(120);
-        assert_eq!(plan(&small, &PASS).unwrap().stream.fps, 120);
+        assert_eq!(plan(&small, &PASS, Codec::H264).unwrap().stream.fps, 120);
         small.video_caps = h264_at(240);
-        assert_eq!(plan(&small, &PASS).unwrap().stream.fps, 120, "panel rate");
+        assert_eq!(
+            plan(&small, &PASS, Codec::H264).unwrap().stream.fps,
+            120,
+            "panel rate"
+        );
         // ...and High@L5.2 still bounds it: 21,888 macroblocks allow 94 fps,
         // minus one of headroom.
         h.video_caps = h264_at(120);
-        assert_eq!(plan(&h, &PASS).unwrap().stream.fps, 93);
+        assert_eq!(plan(&h, &PASS, Codec::H264).unwrap().stream.fps, 93);
         // Absent displayMaxFrameRate is the legacy 60.
         h.display_max_frame_rate = None;
-        let p = plan(&h, &PASS).unwrap();
+        let p = plan(&h, &PASS, Codec::H264).unwrap();
         assert_eq!((p.output.hz, p.stream.fps), (60, 60));
     }
 
@@ -878,12 +919,12 @@ mod tests {
     #[test]
     fn a_panel_only_hello_plans_from_the_panel() {
         let mut h = fixture!("iphone-15-pro-portrait");
-        let with_legacy = plan(&h, &PASS).unwrap();
+        let with_legacy = plan(&h, &PASS, Codec::H264).unwrap();
         (h.pixels_wide, h.pixels_high, h.scale) = (0, 0, 0.0);
-        assert_eq!(plan(&h, &PASS).unwrap(), with_legacy);
+        assert_eq!(plan(&h, &PASS, Codec::H264).unwrap(), with_legacy);
         h.panel = None;
         assert!(matches!(
-            plan(&h, &PASS),
+            plan(&h, &PASS, Codec::H264),
             Err(PlanError::InvalidSize { .. })
         ));
     }
@@ -892,7 +933,10 @@ mod tests {
     fn video_caps_without_h264_is_an_error() {
         let mut h = fixture!("ipad-pro-12.9");
         h.video_caps.as_mut().unwrap().retain(|c| c.codec != "h264");
-        assert_eq!(plan(&h, &PASS), Err(PlanError::NoH264));
+        assert_eq!(
+            plan(&h, &PASS, Codec::H264),
+            Err(PlanError::NoCodecEntry(Codec::H264))
+        );
         // Entries that rule everything out.
         h.video_caps = Some(vec![VideoCap {
             codec: "H264".into(),
@@ -901,7 +945,10 @@ mod tests {
             max_frame_rate: None,
             max_pixels_per_second: None,
         }]);
-        assert_eq!(plan(&h, &PASS), Err(PlanError::NoCompatibleConfiguration));
+        assert_eq!(
+            plan(&h, &PASS, Codec::H264),
+            Err(PlanError::NoCompatibleConfiguration)
+        );
     }
 
     #[test]
@@ -915,7 +962,7 @@ mod tests {
             max_pixels_per_second: None,
         };
         h.video_caps = Some(vec![cap(1920, 120), cap(2732, 30), cap(2732, 60)]);
-        let p = plan(&h, &PASS).unwrap();
+        let p = plan(&h, &PASS, Codec::H264).unwrap();
         assert_eq!(
             (p.stream.width, p.stream.height, p.stream.fps),
             (2732, 2048, 60)
@@ -928,7 +975,7 @@ mod tests {
         h.max_encode_wide = Some(1920);
         h.max_encode_high = Some(1080);
         // 2732x2048 into 1920x1080: height-bound.
-        let p = plan(&h, &PASS).unwrap();
+        let p = plan(&h, &PASS, Codec::H264).unwrap();
         assert!(p.capped);
         assert_eq!((p.stream.width, p.stream.height), (1440, 1080));
         assert_eq!((p.output.width, p.output.height), (1440, 1080));
@@ -940,7 +987,7 @@ mod tests {
             max_frame_rate: None,
             max_pixels_per_second: None,
         }]);
-        let p = plan(&h, &MAC).unwrap();
+        let p = plan(&h, &MAC, Codec::H264).unwrap();
         // The best stream is 1366x1024; the output takes whole points at 2x.
         assert_eq!((p.output.width, p.output.height), (1364, 1024));
         assert_eq!((p.stream.width, p.stream.height), (1364, 1024));
@@ -960,6 +1007,141 @@ mod tests {
         assert_eq!(safe_h264_frame_rate(Size { w: 1920, h: 1080 }, 60), 60);
     }
 
+    fn cap(codec: &str, w: u32, h: u32, fps: u32) -> VideoCap {
+        VideoCap {
+            codec: codec.into(),
+            max_width: Some(w),
+            max_height: Some(h),
+            max_frame_rate: Some(fps),
+            max_pixels_per_second: None,
+        }
+    }
+
+    fn stream(p: &DesktopPlan) -> (u32, u32, u32) {
+        (p.stream.width, p.stream.height, p.stream.fps)
+    }
+
+    #[test]
+    fn preferred_codec_is_hevc_only_when_offered_and_encodable() {
+        let mut h = fixture!("ipad-pro-12.9");
+        h.video_caps = Some(vec![
+            cap("h264", 2732, 2048, 60),
+            cap("hevc", 2732, 2048, 60),
+        ]);
+        assert_eq!(preferred_codec(&h, true), Codec::Hevc);
+        assert_eq!(preferred_codec(&h, false), Codec::H264);
+        h.video_caps = Some(vec![cap("HEVC", 2732, 2048, 60)]);
+        assert_eq!(preferred_codec(&h, true), Codec::Hevc);
+        h.video_caps = Some(vec![cap("h264", 2732, 2048, 60)]);
+        assert_eq!(preferred_codec(&h, true), Codec::H264);
+        h.video_caps = None;
+        assert_eq!(preferred_codec(&h, true), Codec::H264);
+    }
+
+    #[test]
+    fn an_ipad_plans_the_same_raster_for_both_codecs() {
+        let mut h = fixture!("ipad-pro-12.9");
+        h.panel.as_mut().unwrap().pixels_wide = Some(2388);
+        h.panel.as_mut().unwrap().pixels_high = Some(1668);
+        h.pixels_wide = 2388;
+        h.pixels_high = 1668;
+        h.video_caps = Some(vec![
+            cap("h264", 2388, 2388, 60),
+            cap("hevc", 2388, 2388, 60),
+        ]);
+        let a = plan(&h, &PASS, Codec::H264).unwrap();
+        let b = plan(&h, &PASS, Codec::Hevc).unwrap();
+        assert_eq!(stream(&a), (2388, 1668, 60));
+        assert_eq!(stream(&b), (2388, 1668, 60));
+        assert_eq!(a.output, b.output);
+        assert_eq!((a.stream.codec, b.stream.codec), (Codec::H264, Codec::Hevc));
+    }
+
+    #[test]
+    fn mac_5k_hevc_is_uncapped_where_h264_is_capped() {
+        let h = fixture!("mac-5k");
+        let a = plan(&h, &PASS, Codec::H264).unwrap();
+        assert_eq!(stream(&a), (4096, 2304, 55));
+        assert!(a.capped);
+        let b = plan(&h, &PASS, Codec::Hevc).unwrap();
+        assert_eq!(stream(&b), (5120, 2880, 60));
+        assert_eq!((b.output.width, b.output.height), (5120, 2880));
+        assert!(!b.capped);
+        assert_eq!(b.stream.codec, Codec::Hevc);
+        // The Mac rule keeps whole points at 2x on the uncapped output.
+        let m = plan(&h, &MAC, Codec::Hevc).unwrap();
+        assert_eq!(stream(&m), (5120, 2880, 60));
+        assert!(!m.capped);
+    }
+
+    #[test]
+    fn hevc_ignores_the_legacy_ceiling_that_limits_h264() {
+        let mut h = fixture!("mac-5k");
+        h.max_encode_wide = Some(1920);
+        h.max_encode_high = Some(1080);
+        let a = plan(&h, &PASS, Codec::H264).unwrap();
+        assert_eq!((a.stream.width, a.stream.height), (1920, 1080));
+        let b = plan(&h, &PASS, Codec::Hevc).unwrap();
+        assert_eq!(stream(&b), (5120, 2880, 60));
+        // A ceiling that would reject H.264 outright does not touch HEVC.
+        h.max_encode_wide = Some(1);
+        h.max_encode_high = Some(1);
+        assert_eq!(
+            plan(&h, &PASS, Codec::H264),
+            Err(PlanError::NoCompatibleConfiguration)
+        );
+        assert_eq!(
+            stream(&plan(&h, &PASS, Codec::Hevc).unwrap()),
+            (5120, 2880, 60)
+        );
+    }
+
+    #[test]
+    fn an_hevc_entry_still_limits_the_rate_and_the_raster() {
+        let mut h = fixture!("mac-5k");
+        let mut e = cap("hevc", 5120, 2880, 60);
+        e.max_pixels_per_second = Some(5120 * 2880 * 30);
+        h.video_caps = Some(vec![e.clone()]);
+        assert_eq!(
+            stream(&plan(&h, &PASS, Codec::Hevc).unwrap()),
+            (5120, 2880, 30)
+        );
+        // Too small a budget for a frame at 1 fps: the raster shrinks.
+        e.max_pixels_per_second = Some(3840 * 2160 * 60);
+        h.video_caps = Some(vec![e]);
+        let p = plan(&h, &PASS, Codec::Hevc).unwrap();
+        assert!(
+            u64::from(p.stream.width) * u64::from(p.stream.height) * u64::from(p.stream.fps)
+                <= 3840 * 2160 * 60
+        );
+        // The entry's own axis limits apply, and the panel still bounds it.
+        h.video_caps = Some(vec![cap("hevc", 4000, 4000, 60)]);
+        let p = plan(&h, &PASS, Codec::Hevc).unwrap();
+        assert_eq!((p.stream.width, p.stream.height), (4000, 2250));
+        assert!(p.capped);
+    }
+
+    #[test]
+    fn hevc_without_an_hevc_entry_is_an_error() {
+        let mut h = fixture!("ipad-pro-12.9");
+        h.video_caps = Some(vec![cap("h264", 2732, 2048, 60)]);
+        assert_eq!(
+            plan(&h, &PASS, Codec::Hevc),
+            Err(PlanError::NoCodecEntry(Codec::Hevc))
+        );
+        // The legacy contract is H.264 only.
+        h.video_caps = None;
+        assert_eq!(
+            plan(&h, &PASS, Codec::Hevc),
+            Err(PlanError::NoCodecEntry(Codec::Hevc))
+        );
+        assert!(plan(&h, &PASS, Codec::H264).is_ok());
+        assert_eq!(
+            PlanError::NoCodecEntry(Codec::Hevc).to_string(),
+            "receiver does not offer HEVC"
+        );
+    }
+
     #[test]
     fn scale_policy_parses() {
         assert_eq!("passthrough".parse(), Ok(ScalePolicy::Passthrough));
@@ -972,7 +1154,7 @@ mod tests {
 
     #[test]
     fn plan_logs_in_one_line() {
-        let p = plan(&fixture!("mac-5k"), &MAC).unwrap();
+        let p = plan(&fixture!("mac-5k"), &MAC, Codec::H264).unwrap();
         assert_eq!(
             p.to_string(),
             "panel 5120x2880 @2 points 2560x1440 -> output 4096x2304 @60Hz scale 2 (2048x1152 logical), capped to stream -> h264 4096x2304 @55"
@@ -1040,9 +1222,9 @@ mod tests {
         let t = Instant::now();
         let mut d = Debounce::new(HELLO_DEBOUNCE);
         let mut h = fixture!("mac-5k");
-        d.on_hello(plan(&h, &PASS).unwrap(), t);
+        d.on_hello(plan(&h, &PASS, Codec::H264).unwrap(), t);
         h.addrs = Some(vec!["192.168.1.20".into()]);
-        assert_eq!(d.on_hello(plan(&h, &PASS).unwrap(), t), None);
+        assert_eq!(d.on_hello(plan(&h, &PASS, Codec::H264).unwrap(), t), None);
         assert_eq!(d.deadline(), None);
     }
 }

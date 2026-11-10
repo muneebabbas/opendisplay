@@ -122,6 +122,7 @@ mod tests {
     fn settings() -> EncoderSettings {
         EncoderSettings {
             backend: Backend::Openh264,
+            codec: opendisplay_proto::video::Codec::H264,
             bitrate_bps: 8_000_000,
             max_fps: 60.0,
             threads: 1,
