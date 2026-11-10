@@ -81,7 +81,9 @@ impl Backend for WlrootsBackend {
     fn caps(&self) -> Caps {
         Caps {
             cursor_metadata: false,
-            dmabuf: false,
+            // GPU buffers for the VA-API encoder over ext-image-copy-capture
+            // (wayland/capture.rs); wlr-screencopy stays in shared memory.
+            dmabuf: self.capture == CapturePath::Ext,
             resize_in_place: true,
             creates_outputs: true,
         }

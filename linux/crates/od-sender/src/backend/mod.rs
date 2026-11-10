@@ -14,7 +14,10 @@ pub mod lock;
 pub mod wlroots;
 
 use std::fmt;
+use std::os::fd::OwnedFd;
 use std::str::FromStr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::{Result, bail};
@@ -235,10 +238,35 @@ pub trait Backend: Send {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Default)]
 pub struct CaptureOptions {
     /// Paint the cursor into the frames.
     pub cursor: bool,
+    /// Capture into GPU buffers ([`FrameBuf::Dmabuf`]) while this says the
+    /// encoder takes them; `None` (or a cleared flag) captures into shared
+    /// memory. Captures that cannot hand out GPU buffers ignore it.
+    pub gpu: Option<GpuFrames>,
+}
+
+/// Whether the encoder takes GPU frames, shared by the encoder (which
+/// clears it when it cannot import them) and the capture thread (which then
+/// switches to shared-memory buffers for good).
+#[derive(Debug, Clone)]
+pub struct GpuFrames(Arc<AtomicBool>);
+
+impl GpuFrames {
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
+    pub fn wanted(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// No more GPU frames: capture falls back to shared memory.
+    pub fn decline(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 /// One virtual display. Capture always stops before the output is
@@ -344,17 +372,41 @@ pub enum FrameBuf {
     /// Already converted to the encoder's 4:2:0 format by the convert stage
     /// ([`crate::encoder::ConvertStage`]).
     Yuv(crate::encoder::YuvFrame),
-    /// GPU buffer for zero-copy hardware encode; not produced yet (VA-API).
-    #[allow(dead_code)]
-    Dmabuf { width: u32, height: u32 },
+    /// A GPU buffer the compositor rendered into, imported by the VA-API
+    /// encoder without a CPU copy.
+    Dmabuf(Dmabuf),
+}
+
+/// A captured frame in a GPU buffer (a dmabuf), 4-byte RGB in the byte
+/// order of `format`, laid out as `modifier` says.
+#[derive(Clone)]
+pub struct Dmabuf {
+    pub width: u32,
+    pub height: u32,
+    pub format: PixelFormat,
+    /// DRM format modifier (tiling, compression); 0 is linear.
+    pub modifier: u64,
+    pub planes: Vec<DmabufPlane>,
+    /// Unique to the buffer for the life of the process, so an importer can
+    /// keep what it made of it across the frames captured into it.
+    pub id: u64,
+    /// Keeps the buffer out of the capture's rotation while any clone is
+    /// alive: hold one until the GPU has finished reading the frame.
+    pub hold: Arc<dyn Send + Sync>,
+}
+
+#[derive(Clone)]
+pub struct DmabufPlane {
+    pub fd: Arc<OwnedFd>,
+    pub offset: u32,
+    pub stride: u32,
 }
 
 impl Frame {
     pub fn dimensions(&self) -> (u32, u32) {
         match self.buf {
-            FrameBuf::Cpu { width, height, .. } | FrameBuf::Dmabuf { width, height } => {
-                (width, height)
-            }
+            FrameBuf::Cpu { width, height, .. } => (width, height),
+            FrameBuf::Dmabuf(ref d) => (d.width, d.height),
             FrameBuf::Yuv(ref y) => y.dimensions(),
         }
     }
