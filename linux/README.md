@@ -22,6 +22,10 @@ Video is encoded on the CPU (x264) by default. Hardware encoding through
 VA-API (tested on Intel) is available as an opt-in, `--encoder vaapi`, when
 od-sender is built against an FFmpeg with VA-API, as the Arch package is; the
 release tarball does not have it yet.
+With `--encoder vaapi` the stream is HEVC when the receiver offers it (the
+iPad and Mac apps do) and the GPU can encode it, otherwise H.264. If HEVC
+fails, od-sender falls back to H.264 for the rest of the run;
+`OD_FORCE_H264=1` forces H.264, for comparisons.
 
 The other direction, a Linux machine as the display, is the
 [Linux receiver](#linux-receiver-beta), also in beta.
