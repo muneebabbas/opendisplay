@@ -28,6 +28,7 @@ use std::sync::OnceLock;
 use anyhow::{Context as _, Result, anyhow, bail};
 use ff::format::Pixel;
 use ffmpeg_next as ff;
+use tracing::debug;
 
 use super::steps::Steps;
 use crate::backend::PixelFormat;
@@ -38,6 +39,7 @@ type VAConfigID = VAGenericID;
 type VAContextID = VAGenericID;
 type VASurfaceID = VAGenericID;
 type VABufferID = VAGenericID;
+type VAImageID = VAGenericID;
 type VADisplay = *mut c_void;
 
 const VA_STATUS_SUCCESS: VAStatus = 0;
@@ -50,6 +52,10 @@ const VA_PROC_COLOR_STANDARD_BT709: c_int = 2;
 const VA_PROC_COLOR_STANDARD_SRGB: c_int = 8;
 const VA_SOURCE_RANGE_REDUCED: u8 = 1;
 const VA_SOURCE_RANGE_FULL: u8 = 2;
+const VA_FOURCC_BGRX: u32 = u32::from_le_bytes(*b"BGRX");
+const VA_FOURCC_RGBX: u32 = u32::from_le_bytes(*b"RGBX");
+const VA_FOURCC_XRGB: u32 = u32::from_le_bytes(*b"XRGB");
+const VA_FOURCC_XBGR: u32 = u32::from_le_bytes(*b"XBGR");
 
 /// `VARectangle`.
 #[repr(C)]
@@ -59,6 +65,40 @@ struct VaRectangle {
     y: i16,
     width: u16,
     height: u16,
+}
+
+/// `VAImageFormat`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct VaImageFormat {
+    fourcc: u32,
+    byte_order: u32,
+    bits_per_pixel: u32,
+    depth: u32,
+    red_mask: u32,
+    green_mask: u32,
+    blue_mask: u32,
+    alpha_mask: u32,
+    va_reserved: [u32; 4],
+}
+
+/// `VAImage`: a CPU view of a surface, here one from `vaDeriveImage`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct VaImage {
+    image_id: VAImageID,
+    format: VaImageFormat,
+    buf: VABufferID,
+    width: u16,
+    height: u16,
+    data_size: u32,
+    num_planes: u32,
+    pitches: [u32; 3],
+    offsets: [u32; 3],
+    num_palette_entries: i32,
+    entry_bytes: i32,
+    component_order: [i8; 4],
+    va_reserved: [u32; 4],
 }
 
 /// `VAProcColorProperties`.
@@ -113,6 +153,13 @@ const _: () = {
     use std::mem::{offset_of, size_of};
     assert!(size_of::<VaRectangle>() == 8);
     assert!(offset_of!(VaRectangle, width) == 4);
+    assert!(size_of::<VaImageFormat>() == 48);
+    assert!(size_of::<VaImage>() == 120);
+    assert!(offset_of!(VaImage, buf) == 52);
+    assert!(offset_of!(VaImage, width) == 56);
+    assert!(offset_of!(VaImage, data_size) == 60);
+    assert!(offset_of!(VaImage, pitches) == 68);
+    assert!(offset_of!(VaImage, offsets) == 80);
     assert!(size_of::<VaProcColorProperties>() == 8);
     assert!(offset_of!(VaProcColorProperties, color_range) == 1);
     assert!(offset_of!(VaProcColorProperties, matrix_coefficients) == 4);
@@ -183,6 +230,10 @@ libva! {
     fn vaRenderPicture(VADisplay, VAContextID, *mut VABufferID, c_int) -> VAStatus;
     fn vaEndPicture(VADisplay, VAContextID) -> VAStatus;
     fn vaSyncSurface(VADisplay, VASurfaceID) -> VAStatus;
+    fn vaDeriveImage(VADisplay, VASurfaceID, *mut VaImage) -> VAStatus;
+    fn vaDestroyImage(VADisplay, VAImageID) -> VAStatus;
+    fn vaMapBuffer(VADisplay, VABufferID, *mut *mut c_void) -> VAStatus;
+    fn vaUnmapBuffer(VADisplay, VABufferID) -> VAStatus;
     fn vaErrorStr(VAStatus) -> *const c_char;
 }
 
@@ -288,6 +339,9 @@ pub struct GpuConvert {
     height: u32,
     /// Upload surfaces by capture byte order, made on first use.
     sources: Vec<(Pixel, *mut ff::ffi::AVBufferRef)>,
+    /// Write source surfaces through `vaDeriveImage` ([`Self::upload_direct`]);
+    /// cleared if the driver cannot, and FFmpeg's transfer is used instead.
+    direct_upload: bool,
 }
 
 // SAFETY: the VA ids and FFmpeg references are only used from the thread that
@@ -365,9 +419,17 @@ impl GpuConvert {
             width,
             height,
             sources: Vec::new(),
+            direct_upload: true,
         };
-        gpu.verify(dst_frames)
-            .context("the driver's colour conversion is not BT.709 limited range")?;
+        if let Err(e) = gpu.verify(dst_frames) {
+            // A driver whose surface mapping is not what it says gets the
+            // colours right through FFmpeg's upload, or not at all.
+            debug!("VA-API: colour check with mapped uploads failed: {e:#}");
+            gpu.direct_upload = false;
+            gpu.verify(dst_frames)
+                .context("the driver's colour conversion is not BT.709 limited range")?;
+        }
+
         Ok(gpu)
     }
 
@@ -392,24 +454,102 @@ impl GpuConvert {
         let pix = source_pixel(format);
         let pool = self.source_pool(pix)?;
         let src = hw_surface(pool)?;
-        let mut wrapper = ff::frame::Video::empty();
-        // SAFETY: the wrapper borrows `pixels` without owning it (no buffer
-        // reference, so dropping it frees nothing) and is only read by the
-        // transfer below, which returns before `pixels` can go away.
-        let err = unsafe {
-            let f = wrapper.as_mut_ptr();
-            (*f).format = ff::ffi::AVPixelFormat::from(pix) as c_int;
-            (*f).width = w as c_int;
-            (*f).height = h as c_int;
-            (*f).data[0] = pixels.as_ptr().cast_mut();
-            (*f).linesize[0] = stride as c_int;
-            ff::ffi::av_hwframe_transfer_data(src.as_ptr().cast_mut(), wrapper.as_ptr(), 0)
-        };
-        if err < 0 {
-            bail!("uploading to a VA surface: {}", ff::Error::from(err));
+        if self.direct_upload {
+            if let Err(e) = self.upload_direct(surface_id(&src), pix, pixels, stride) {
+                debug!(
+                    "VA-API: mapping the source surface failed, uploading through FFmpeg: {e:#}"
+                );
+                self.direct_upload = false;
+            }
+        }
+        if !self.direct_upload {
+            upload_ffmpeg(&src, pix, w, h, pixels, stride)?;
         }
         steps.lap("upload");
         self.run(surface_id(&src), surface_id(dst), steps)
+    }
+
+    /// Copy `pixels` into the source surface `surface` through a CPU mapping
+    /// of the surface itself: about 2.5 ms for 2388x1668 on iHD, where
+    /// FFmpeg's `av_hwframe_transfer_data` took 5-7 ms. Fails, changing
+    /// nothing, if the driver cannot derive an image of the surface or
+    /// derives one of another layout.
+    fn upload_direct(
+        &self,
+        surface: VASurfaceID,
+        pix: Pixel,
+        pixels: &[u8],
+        stride: usize,
+    ) -> Result<()> {
+        let va = self.va;
+        let (w, h) = (self.width as usize, self.height as usize);
+        // SAFETY: all-zero is a valid value: integers only.
+        let mut image: VaImage = unsafe { std::mem::zeroed() };
+        // SAFETY: a valid surface on our display and an out-pointer.
+        let status = unsafe { (va.vaDeriveImage)(self.display, surface, &mut image) };
+        va.check("vaDeriveImage", status)?;
+        // libva names these by byte order; iHD names the derived image by
+        // the order within a little-endian word (D3D's X8R8G8B8), so a BGRX
+        // surface comes back as "XRGB". Same bytes either way, and `new`
+        // checks the colours through this very path.
+        let want = if pix == Pixel::RGBZ {
+            [VA_FOURCC_RGBX, VA_FOURCC_XBGR]
+        } else {
+            [VA_FOURCC_BGRX, VA_FOURCC_XRGB]
+        };
+        let pitch = image.pitches[0] as usize;
+        let offset = image.offsets[0] as usize;
+        let result = if !want.contains(&image.format.fourcc)
+            || (image.width as usize) < w
+            || (image.height as usize) < h
+            || pitch < w * 4
+            || (image.data_size as usize) < offset + pitch * (h - 1) + w * 4
+        {
+            Err(anyhow!(
+                "derived image is {:?} {}x{} pitch {pitch}",
+                image.format.fourcc.to_le_bytes().map(char::from),
+                image.width,
+                image.height
+            ))
+        } else {
+            let mut mapped = std::ptr::null_mut();
+            // SAFETY: the image's buffer, mapped once and unmapped below.
+            let status = unsafe { (va.vaMapBuffer)(self.display, image.buf, &mut mapped) };
+            va.check("vaMapBuffer", status).and_then(|()| {
+                let base = mapped.cast::<u8>();
+                for (y, row) in pixels.chunks(stride).take(h).enumerate() {
+                    // SAFETY: the mapping holds `data_size` bytes, which was
+                    // checked to cover `h` rows of `pitch` from `offset`;
+                    // `row` has at least `w * 4` bytes (checked by
+                    // `convert`); the two do not overlap.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            row.as_ptr(),
+                            base.add(offset + y * pitch),
+                            w * 4,
+                        )
+                    };
+                }
+                // SAFETY: mapped above.
+                let status = unsafe { (va.vaUnmapBuffer)(self.display, image.buf) };
+                va.check("vaUnmapBuffer", status)
+            })
+        };
+        // SAFETY: derived above, destroyed once; the surface stays.
+        unsafe { (va.vaDestroyImage)(self.display, image.image_id) };
+        result
+    }
+
+    /// Whether uploads go through a mapping of the surface.
+    #[cfg(test)]
+    pub(super) fn direct_upload(&self) -> bool {
+        self.direct_upload
+    }
+
+    /// Force FFmpeg's upload (`false`), or the mapping where it works.
+    #[cfg(test)]
+    pub(super) fn set_direct_upload(&mut self, on: bool) {
+        self.direct_upload = on;
     }
 
     fn source_pool(&mut self, pix: Pixel) -> Result<*mut ff::ffi::AVBufferRef> {
@@ -521,6 +661,34 @@ impl Drop for GpuConvert {
             ff::ffi::av_buffer_unref(&mut self.device);
         }
     }
+}
+
+/// Copy `pixels` into the VA surface `src` with FFmpeg's generic transfer.
+fn upload_ffmpeg(
+    src: &ff::frame::Video,
+    pix: Pixel,
+    w: usize,
+    h: usize,
+    pixels: &[u8],
+    stride: usize,
+) -> Result<()> {
+    let mut wrapper = ff::frame::Video::empty();
+    // SAFETY: the wrapper borrows `pixels` without owning it (no buffer
+    // reference, so dropping it frees nothing) and is only read by the
+    // transfer below, which returns before `pixels` can go away.
+    let err = unsafe {
+        let f = wrapper.as_mut_ptr();
+        (*f).format = ff::ffi::AVPixelFormat::from(pix) as c_int;
+        (*f).width = w as c_int;
+        (*f).height = h as c_int;
+        (*f).data[0] = pixels.as_ptr().cast_mut();
+        (*f).linesize[0] = stride as c_int;
+        ff::ffi::av_hwframe_transfer_data(src.as_ptr().cast_mut(), wrapper.as_ptr(), 0)
+    };
+    if err < 0 {
+        bail!("uploading to a VA surface: {}", ff::Error::from(err));
+    }
+    Ok(())
 }
 
 /// An NV12 surface copied into system memory.
