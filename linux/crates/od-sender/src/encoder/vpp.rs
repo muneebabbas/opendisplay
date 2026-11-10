@@ -143,22 +143,36 @@ struct VaProcPipelineParameterBuffer {
     output_color_properties: VaProcColorProperties,
     processing_mode: c_int,
     output_hdr_metadata: *mut c_void,
-    va_reserved: [u32; 16],
+    va_reserved: [u32; PIPELINE_RESERVED],
 }
 
+/// `va_vpp.h` pads the pipeline buffer to the same total on every ABI:
+/// `VA_PADDING_LARGE - 16` words where pointers are 64-bit, `- 13` elsewhere.
+const PIPELINE_RESERVED: usize = if cfg!(target_pointer_width = "64") {
+    16
+} else {
+    19
+};
+
 // Offsets and sizes as printed by a C compiler against libva's headers
-// (x86_64 and aarch64 agree). A mismatch fails the build, not a frame.
+// (x86_64 and aarch64 agree). A mismatch fails the build, not a frame. Only
+// 64-bit targets are built and checked; the 32-bit padding above follows the
+// header but has not been compared against a 32-bit compiler.
 #[cfg(target_pointer_width = "64")]
 const _: () = {
     use std::mem::{offset_of, size_of};
     assert!(size_of::<VaRectangle>() == 8);
     assert!(size_of::<VaImageFormat>() == 48);
+    assert!(offset_of!(VaImageFormat, bits_per_pixel) == 8);
+    assert!(offset_of!(VaImageFormat, va_reserved) == 32);
     assert!(size_of::<VaImage>() == 120);
     assert!(offset_of!(VaImage, buf) == 52);
     assert!(offset_of!(VaImage, width) == 56);
     assert!(offset_of!(VaImage, data_size) == 60);
     assert!(offset_of!(VaImage, pitches) == 68);
     assert!(offset_of!(VaImage, offsets) == 80);
+    assert!(offset_of!(VaImage, num_planes) == 64);
+    assert!(offset_of!(VaImage, component_order) == 100);
     assert!(offset_of!(VaRectangle, width) == 4);
     assert!(size_of::<VaProcColorProperties>() == 8);
     assert!(offset_of!(VaProcColorProperties, color_range) == 1);
@@ -179,6 +193,7 @@ const _: () = {
 };
 
 // glibc before 2.34 keeps dlopen in libdl; later versions ship an empty one.
+// SAFETY: these are the signatures `<dlfcn.h>` declares for both functions.
 #[link(name = "dl")]
 unsafe extern "C" {
     fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
@@ -235,11 +250,6 @@ libva! {
     fn vaUnmapBuffer(VADisplay, VABufferID) -> VAStatus;
     fn vaErrorStr(VAStatus) -> *const c_char;
 }
-
-// SAFETY: function pointers into a library that stays loaded; libva calls on
-// one display are serialised by the caller (one encoder thread).
-unsafe impl Send for Va {}
-unsafe impl Sync for Va {}
 
 /// libva, loaded once; the error is kept so every encoder open reports it.
 fn va() -> Result<&'static Va> {
@@ -363,7 +373,12 @@ impl GpuConvert {
             let fc = (*dst_frames).data as *mut AVHWFramesContext;
             ((*vaapi).display, (*fc).width as u32, (*fc).height as u32)
         };
-        if display.is_null() || width > u16::MAX as u32 || height > u16::MAX as u32 {
+        if display.is_null()
+            || width == 0
+            || height == 0
+            || width > u16::MAX as u32
+            || height > u16::MAX as u32
+        {
             bail!("no VA display or a frame of {width}x{height}");
         }
         let mut config = 0;
