@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="460" font-family="sans-serif" font-size="12">
+<rect width="760" height="460" fill="white"/>
+<text x="380.0" y="22" text-anchor="middle" font-size="15">scroll-flood: VMAF vs bitrate (CBR sweep)</text>
+<line x1="70" x2="740" y1="400.0" y2="400.0" stroke="#ddd"/>
+<text x="64" y="404.0" text-anchor="end">53.3</text>
+<line x1="70" x2="740" y1="328.0" y2="328.0" stroke="#ddd"/>
+<text x="64" y="332.0" text-anchor="end">63.1</text>
+<line x1="70" x2="740" y1="256.0" y2="256.0" stroke="#ddd"/>
+<text x="64" y="260.0" text-anchor="end">72.9</text>
+<line x1="70" x2="740" y1="184.0" y2="184.0" stroke="#ddd"/>
+<text x="64" y="188.0" text-anchor="end">82.7</text>
+<line x1="70" x2="740" y1="112.0" y2="112.0" stroke="#ddd"/>
+<text x="64" y="116.0" text-anchor="end">92.4</text>
+<line x1="70" x2="740" y1="40.0" y2="40.0" stroke="#ddd"/>
+<text x="64" y="44.0" text-anchor="end">102</text>
+<line x1="70.0" x2="70.0" y1="40" y2="400" stroke="#eee"/>
+<text x="70.0" y="416" text-anchor="middle">0</text>
+<line x1="136.5" x2="136.5" y1="40" y2="400" stroke="#eee"/>
+<text x="136.5" y="416" text-anchor="middle">5</text>
+<line x1="202.9" x2="202.9" y1="40" y2="400" stroke="#eee"/>
+<text x="202.9" y="416" text-anchor="middle">10</text>
+<line x1="269.4" x2="269.4" y1="40" y2="400" stroke="#eee"/>
+<text x="269.4" y="416" text-anchor="middle">15</text>
+<line x1="335.9" x2="335.9" y1="40" y2="400" stroke="#eee"/>
+<text x="335.9" y="416" text-anchor="middle">20</text>
+<line x1="402.4" x2="402.4" y1="40" y2="400" stroke="#eee"/>
+<text x="402.4" y="416" text-anchor="middle">25</text>
+<line x1="468.8" x2="468.8" y1="40" y2="400" stroke="#eee"/>
+<text x="468.8" y="416" text-anchor="middle">30</text>
+<line x1="535.3" x2="535.3" y1="40" y2="400" stroke="#eee"/>
+<text x="535.3" y="416" text-anchor="middle">35</text>
+<line x1="601.8" x2="601.8" y1="40" y2="400" stroke="#eee"/>
+<text x="601.8" y="416" text-anchor="middle">40</text>
+<line x1="668.3" x2="668.3" y1="40" y2="400" stroke="#eee"/>
+<text x="668.3" y="416" text-anchor="middle">45</text>
+<line x1="734.7" x2="734.7" y1="40" y2="400" stroke="#eee"/>
+<text x="734.7" y="416" text-anchor="middle">50</text>
+<rect x="70" y="40" width="670" height="360" fill="none" stroke="black"/>
+<text x="405.0" y="442" text-anchor="middle">actual bitrate (Mbit/s)</text>
+<text transform="translate(16,220.0) rotate(-90)" text-anchor="middle">VMAF</text>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="180.8,383.6 231.5,204.6 284.5,101.4 391.5,56.6 496.4,56.5 708.1,56.4"/>
+<circle cx="180.8" cy="383.6" r="3.5" fill="#d62728"/>
+<circle cx="231.5" cy="204.6" r="3.5" fill="#d62728"/>
+<circle cx="284.5" cy="101.4" r="3.5" fill="#d62728"/>
+<circle cx="391.5" cy="56.6" r="3.5" fill="#d62728"/>
+<circle cx="496.4" cy="56.5" r="3.5" fill="#d62728"/>
+<circle cx="708.1" cy="56.4" r="3.5" fill="#d62728"/>
+<line x1="620" x2="645" y1="58" y2="58" stroke="#d62728" stroke-width="2"/>
+<text x="650" y="62">h264_vaapi</text>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="179.2,249.1 231.2,156.0 284.8,80.5 392.1,56.6 496.6,56.4 707.0,56.4"/>
+<circle cx="179.2" cy="249.1" r="3.5" fill="#1f77b4"/>
+<circle cx="231.2" cy="156.0" r="3.5" fill="#1f77b4"/>
+<circle cx="284.8" cy="80.5" r="3.5" fill="#1f77b4"/>
+<circle cx="392.1" cy="56.6" r="3.5" fill="#1f77b4"/>
+<circle cx="496.6" cy="56.4" r="3.5" fill="#1f77b4"/>
+<circle cx="707.0" cy="56.4" r="3.5" fill="#1f77b4"/>
+<line x1="620" x2="645" y1="76" y2="76" stroke="#1f77b4" stroke-width="2"/>
+<text x="650" y="80">hevc_vaapi</text>
+</svg>

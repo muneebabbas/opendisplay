@@ -11,7 +11,7 @@
 set -euo pipefail
 
 STACKS=(
-  linux/vaapi-gpu-convert
+  linux/hevc
 )
 
 push=0

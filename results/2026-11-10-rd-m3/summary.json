@@ -1,0 +1,391 @@
+{
+ "ffmpeg": "ffmpeg version n9.0.2 Copyright (c) 2000-2026 the FFmpeg developers",
+ "vainfo": [
+  "Trying display: wayland",
+  "vainfo: VA-API version: 1.24 (libva 2.24.0)",
+  "vainfo: Driver version: Intel iHD driver for Intel(R) Gen Graphics - 26.3.5 ()",
+  "vainfo: Supported profile and entrypoints"
+ ],
+ "frames": 360,
+ "bd": {
+  "scroll-code": {
+   "bd_rate_psnr_y": {
+    "value": -31.421415396488804,
+    "lo": 28.918,
+    "hi": 54.008,
+    "cubic_monotonic_on_interval": true,
+    "n_points": [
+     8,
+     8
+    ],
+    "linear_interp_check": -31.933037181054726
+   },
+   "bd_psnr_db": {
+    "value": 3.7207832933289473,
+    "lo": 2.5770319856260313,
+    "hi": 3.773603622632923,
+    "cubic_monotonic_on_interval": true
+   },
+   "bd_rate_ssim_db": {
+    "value": null,
+    "lo": 14.19759491734624,
+    "hi": 34.68521082957736,
+    "cubic_monotonic_on_interval": false,
+    "note": "cubic fit not monotonic over the overlap (ill-conditioned); raw value -57.51 discarded",
+    "n_points": [
+     8,
+     8
+    ],
+    "linear_interp_check": -55.987893601575635
+   },
+   "bd_rate_vmaf": {
+    "value": null,
+    "lo": 64.066,
+    "hi": 99.021,
+    "cubic_monotonic_on_interval": false,
+    "note": "cubic fit not monotonic over the overlap (ill-conditioned); raw value 6.001e+31 discarded",
+    "n_points": [
+     5,
+     5
+    ],
+    "linear_interp_check": -44.898052960902035
+   }
+  },
+  "scroll-flood": {
+   "bd_rate_psnr_y": {
+    "value": -11.783880874464526,
+    "lo": 22.06,
+    "hi": 34.951,
+    "cubic_monotonic_on_interval": true,
+    "n_points": [
+     6,
+     6
+    ],
+    "linear_interp_check": -11.982803864139813
+   },
+   "bd_psnr_db": {
+    "value": 1.0826156849534612,
+    "lo": 3.920905604164024,
+    "hi": 4.680487807111926,
+    "cubic_monotonic_on_interval": true
+   },
+   "bd_rate_ssim_db": {
+    "value": -20.929810549444994,
+    "lo": 10.06563769502388,
+    "hi": 21.331221856624992,
+    "cubic_monotonic_on_interval": true,
+    "n_points": [
+     6,
+     6
+    ],
+    "linear_interp_check": -21.26030768857615
+   },
+   "bd_rate_vmaf": {
+    "value": null,
+    "lo": 73.82,
+    "hi": 93.873,
+    "note": "fewer than 4 points; cubic fit not defined",
+    "n_points": [
+     3,
+     3
+    ],
+    "linear_interp_check": -15.752702490554915
+   }
+  },
+  "video": {
+   "bd_rate_psnr_y": {
+    "value": -16.82406553968456,
+    "lo": 34.885,
+    "hi": 41.822,
+    "cubic_monotonic_on_interval": true,
+    "n_points": [
+     7,
+     7
+    ],
+    "linear_interp_check": -16.19979267602767
+   },
+   "bd_psnr_db": {
+    "value": 0.8916460133636256,
+    "lo": 3.453303047718583,
+    "hi": 4.376292200112622,
+    "cubic_monotonic_on_interval": true
+   },
+   "bd_rate_ssim_db": {
+    "value": -48.01672791280394,
+    "lo": 15.313573316084888,
+    "hi": 20.7572071393812,
+    "cubic_monotonic_on_interval": true,
+    "n_points": [
+     7,
+     7
+    ],
+    "linear_interp_check": -47.68469371118855
+   },
+   "bd_rate_vmaf": {
+    "value": -34.924457375920134,
+    "lo": 75.431,
+    "hi": 92.666,
+    "cubic_monotonic_on_interval": true,
+    "n_points": [
+     7,
+     7
+    ],
+    "linear_interp_check": -35.512437954420705
+   }
+  }
+ },
+ "rc_modes": {
+  "S1_h264_A250": [
+   "[h264_vaapi @ 0x560463856c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x560463856c00] Block Level bitrate control: OFF."
+  ],
+  "S1_h264_A500": [
+   "[h264_vaapi @ 0x55dc848f7c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x55dc848f7c00] Block Level bitrate control: OFF."
+  ],
+  "S1_h264_A1000": [
+   "[h264_vaapi @ 0x561c5dae9c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x561c5dae9c00] Block Level bitrate control: OFF."
+  ],
+  "S1_h264_A1500": [
+   "[h264_vaapi @ 0x56111d3eec00] RC mode: CBR.",
+   "[h264_vaapi @ 0x56111d3eec00] Block Level bitrate control: OFF."
+  ],
+  "S1_h264_A2000": [
+   "[h264_vaapi @ 0x55a73c659c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x55a73c659c00] Block Level bitrate control: OFF."
+  ],
+  "S1_h264_A3000": [
+   "[h264_vaapi @ 0x55a85f4e7c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x55a85f4e7c00] Block Level bitrate control: OFF."
+  ],
+  "S1_h264_A4000": [
+   "[h264_vaapi @ 0x563dc16ecc00] RC mode: CBR.",
+   "[h264_vaapi @ 0x563dc16ecc00] Block Level bitrate control: OFF."
+  ],
+  "S1_h264_A6000": [
+   "[h264_vaapi @ 0x563b3dc8ec00] RC mode: CBR.",
+   "[h264_vaapi @ 0x563b3dc8ec00] Block Level bitrate control: OFF."
+  ],
+  "S1_h264_B35000": [
+   "[h264_vaapi @ 0x558f77d3ac00] RC mode: QVBR.",
+   "[h264_vaapi @ 0x558f77d3ac00] Block Level bitrate control: OFF."
+  ],
+  "S1_h264_B8000": [
+   "[h264_vaapi @ 0x55a1e1ba6c00] RC mode: QVBR.",
+   "[h264_vaapi @ 0x55a1e1ba6c00] Block Level bitrate control: OFF."
+  ],
+  "S1_h264_B4000": [
+   "[h264_vaapi @ 0x55822b45fc00] RC mode: QVBR.",
+   "[h264_vaapi @ 0x55822b45fc00] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_A250": [
+   "[hevc_vaapi @ 0x557895a61c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x557895a61c80] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_A500": [
+   "[hevc_vaapi @ 0x556a6ad3fc80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x556a6ad3fc80] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_A1000": [
+   "[hevc_vaapi @ 0x56365abffc80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x56365abffc80] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_A1500": [
+   "[hevc_vaapi @ 0x55db98a48c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x55db98a48c80] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_A2000": [
+   "[hevc_vaapi @ 0x558e7e68fc80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x558e7e68fc80] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_A3000": [
+   "[hevc_vaapi @ 0x55e5994a3c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x55e5994a3c80] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_A4000": [
+   "[hevc_vaapi @ 0x558d5c7e2c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x558d5c7e2c80] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_A6000": [
+   "[hevc_vaapi @ 0x558190546c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x558190546c80] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_B35000": [
+   "[hevc_vaapi @ 0x563f91521c80] RC mode: QVBR.",
+   "[hevc_vaapi @ 0x563f91521c80] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_B8000": [
+   "[hevc_vaapi @ 0x56217207bc80] RC mode: QVBR.",
+   "[hevc_vaapi @ 0x56217207bc80] Block Level bitrate control: OFF."
+  ],
+  "S1_hevc_B4000": [
+   "[hevc_vaapi @ 0x557eff90ac80] RC mode: QVBR.",
+   "[hevc_vaapi @ 0x557eff90ac80] Block Level bitrate control: OFF."
+  ],
+  "S2_h264_A8000": [
+   "[h264_vaapi @ 0x5589a6abdc00] RC mode: CBR.",
+   "[h264_vaapi @ 0x5589a6abdc00] Block Level bitrate control: OFF."
+  ],
+  "S2_h264_A12000": [
+   "[h264_vaapi @ 0x5569203d0c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x5569203d0c00] Block Level bitrate control: OFF."
+  ],
+  "S2_h264_A16000": [
+   "[h264_vaapi @ 0x56435896cc00] RC mode: CBR.",
+   "[h264_vaapi @ 0x56435896cc00] Block Level bitrate control: OFF."
+  ],
+  "S2_h264_A24000": [
+   "[h264_vaapi @ 0x55e2394edc00] RC mode: CBR.",
+   "[h264_vaapi @ 0x55e2394edc00] Block Level bitrate control: OFF."
+  ],
+  "S2_h264_A32000": [
+   "[h264_vaapi @ 0x55a128c9dc00] RC mode: CBR.",
+   "[h264_vaapi @ 0x55a128c9dc00] Block Level bitrate control: OFF."
+  ],
+  "S2_h264_A48000": [
+   "[h264_vaapi @ 0x55f80d599c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x55f80d599c00] Block Level bitrate control: OFF."
+  ],
+  "S2_h264_B35000": [
+   "[h264_vaapi @ 0x55c8a63afc00] RC mode: QVBR.",
+   "[h264_vaapi @ 0x55c8a63afc00] Block Level bitrate control: OFF."
+  ],
+  "S2_h264_B8000": [
+   "[h264_vaapi @ 0x56180850cc00] RC mode: QVBR.",
+   "[h264_vaapi @ 0x56180850cc00] Block Level bitrate control: OFF."
+  ],
+  "S2_h264_B4000": [
+   "[h264_vaapi @ 0x564d41654c00] RC mode: QVBR.",
+   "[h264_vaapi @ 0x564d41654c00] Block Level bitrate control: OFF."
+  ],
+  "S2_hevc_A8000": [
+   "[hevc_vaapi @ 0x55f05f281c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x55f05f281c80] Block Level bitrate control: OFF."
+  ],
+  "S2_hevc_A12000": [
+   "[hevc_vaapi @ 0x55aa5235bc80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x55aa5235bc80] Block Level bitrate control: OFF."
+  ],
+  "S2_hevc_A16000": [
+   "[hevc_vaapi @ 0x5654aabe2c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x5654aabe2c80] Block Level bitrate control: OFF."
+  ],
+  "S2_hevc_A24000": [
+   "[hevc_vaapi @ 0x56426a52dc80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x56426a52dc80] Block Level bitrate control: OFF."
+  ],
+  "S2_hevc_A32000": [
+   "[hevc_vaapi @ 0x55c87225fc80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x55c87225fc80] Block Level bitrate control: OFF."
+  ],
+  "S2_hevc_A48000": [
+   "[hevc_vaapi @ 0x55cebb071c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x55cebb071c80] Block Level bitrate control: OFF."
+  ],
+  "S2_hevc_B35000": [
+   "[hevc_vaapi @ 0x55c53149ec80] RC mode: QVBR.",
+   "[hevc_vaapi @ 0x55c53149ec80] Block Level bitrate control: OFF."
+  ],
+  "S2_hevc_B8000": [
+   "[hevc_vaapi @ 0x5578a41e7c80] RC mode: QVBR.",
+   "[hevc_vaapi @ 0x5578a41e7c80] Block Level bitrate control: OFF."
+  ],
+  "S2_hevc_B4000": [
+   "[hevc_vaapi @ 0x556ba49f4c80] RC mode: QVBR.",
+   "[hevc_vaapi @ 0x556ba49f4c80] Block Level bitrate control: OFF."
+  ],
+  "S3_h264_A2000": [
+   "[h264_vaapi @ 0x55ebaf037c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x55ebaf037c00] Block Level bitrate control: OFF."
+  ],
+  "S3_h264_A4000": [
+   "[h264_vaapi @ 0x560750164c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x560750164c00] Block Level bitrate control: OFF."
+  ],
+  "S3_h264_A6000": [
+   "[h264_vaapi @ 0x55dd066e9c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x55dd066e9c00] Block Level bitrate control: OFF."
+  ],
+  "S3_h264_A8000": [
+   "[h264_vaapi @ 0x55b104d26c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x55b104d26c00] Block Level bitrate control: OFF."
+  ],
+  "S3_h264_A12000": [
+   "[h264_vaapi @ 0x56333f186c00] RC mode: CBR.",
+   "[h264_vaapi @ 0x56333f186c00] Block Level bitrate control: OFF."
+  ],
+  "S3_h264_A16000": [
+   "[h264_vaapi @ 0x55e59b67fc00] RC mode: CBR.",
+   "[h264_vaapi @ 0x55e59b67fc00] Block Level bitrate control: OFF."
+  ],
+  "S3_h264_A24000": [
+   "[h264_vaapi @ 0x559d9383bc00] RC mode: CBR.",
+   "[h264_vaapi @ 0x559d9383bc00] Block Level bitrate control: OFF."
+  ],
+  "S3_h264_B35000": [
+   "[h264_vaapi @ 0x55bb465bac00] RC mode: QVBR.",
+   "[h264_vaapi @ 0x55bb465bac00] Block Level bitrate control: OFF."
+  ],
+  "S3_h264_B8000": [
+   "[h264_vaapi @ 0x5619b100ac00] RC mode: QVBR.",
+   "[h264_vaapi @ 0x5619b100ac00] Block Level bitrate control: OFF."
+  ],
+  "S3_h264_B4000": [
+   "[h264_vaapi @ 0x55d0bbdc4c00] RC mode: QVBR.",
+   "[h264_vaapi @ 0x55d0bbdc4c00] Block Level bitrate control: OFF."
+  ],
+  "S3_hevc_A2000": [
+   "[hevc_vaapi @ 0x561ba45c4c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x561ba45c4c80] Block Level bitrate control: OFF."
+  ],
+  "S3_hevc_A4000": [
+   "[hevc_vaapi @ 0x55c562978c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x55c562978c80] Block Level bitrate control: OFF."
+  ],
+  "S3_hevc_A6000": [
+   "[hevc_vaapi @ 0x559d60c49c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x559d60c49c80] Block Level bitrate control: OFF."
+  ],
+  "S3_hevc_A8000": [
+   "[hevc_vaapi @ 0x55e010705c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x55e010705c80] Block Level bitrate control: OFF."
+  ],
+  "S3_hevc_A12000": [
+   "[hevc_vaapi @ 0x5559a03e5c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x5559a03e5c80] Block Level bitrate control: OFF."
+  ],
+  "S3_hevc_A16000": [
+   "[hevc_vaapi @ 0x55e91d8b8c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x55e91d8b8c80] Block Level bitrate control: OFF."
+  ],
+  "S3_hevc_A24000": [
+   "[hevc_vaapi @ 0x55a87ede3c80] RC mode: CBR.",
+   "[hevc_vaapi @ 0x55a87ede3c80] Block Level bitrate control: OFF."
+  ],
+  "S3_hevc_B35000": [
+   "[hevc_vaapi @ 0x55a656ce3c80] RC mode: QVBR.",
+   "[hevc_vaapi @ 0x55a656ce3c80] Block Level bitrate control: OFF."
+  ],
+  "S3_hevc_B8000": [
+   "[hevc_vaapi @ 0x55b96a8adc80] RC mode: QVBR.",
+   "[hevc_vaapi @ 0x55b96a8adc80] Block Level bitrate control: OFF."
+  ],
+  "S3_hevc_B4000": [
+   "[hevc_vaapi @ 0x559fe83b0c80] RC mode: QVBR.",
+   "[hevc_vaapi @ 0x559fe83b0c80] Block Level bitrate control: OFF."
+  ]
+ },
+ "alignment_check": {
+  "ref_vs_ref": {
+   "psnr_y": "inf",
+   "average": "inf"
+  },
+  "ref_vs_shift1": {
+   "psnr_y": "17.163317",
+   "average": "18.924230"
+  }
+ },
+ "warnings": {},
+ "failed": []
+}

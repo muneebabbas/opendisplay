@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="460" font-family="sans-serif" font-size="12">
+<rect width="760" height="460" fill="white"/>
+<text x="380.0" y="22" text-anchor="middle" font-size="15">scroll-code: PSNR-Y vs bitrate (CBR sweep)</text>
+<line x1="70" x2="740" y1="400.0" y2="400.0" stroke="#ddd"/>
+<text x="64" y="404.0" text-anchor="end">24.1</text>
+<line x1="70" x2="740" y1="328.0" y2="328.0" stroke="#ddd"/>
+<text x="64" y="332.0" text-anchor="end">30.7</text>
+<line x1="70" x2="740" y1="256.0" y2="256.0" stroke="#ddd"/>
+<text x="64" y="260.0" text-anchor="end">37.3</text>
+<line x1="70" x2="740" y1="184.0" y2="184.0" stroke="#ddd"/>
+<text x="64" y="188.0" text-anchor="end">43.9</text>
+<line x1="70" x2="740" y1="112.0" y2="112.0" stroke="#ddd"/>
+<text x="64" y="116.0" text-anchor="end">50.4</text>
+<line x1="70" x2="740" y1="40.0" y2="40.0" stroke="#ddd"/>
+<text x="64" y="44.0" text-anchor="end">57</text>
+<line x1="70.0" x2="70.0" y1="40" y2="400" stroke="#eee"/>
+<text x="70.0" y="416" text-anchor="middle">0</text>
+<line x1="284.9" x2="284.9" y1="40" y2="400" stroke="#eee"/>
+<text x="284.9" y="416" text-anchor="middle">2</text>
+<line x1="499.9" x2="499.9" y1="40" y2="400" stroke="#eee"/>
+<text x="499.9" y="416" text-anchor="middle">4</text>
+<line x1="714.8" x2="714.8" y1="40" y2="400" stroke="#eee"/>
+<text x="714.8" y="416" text-anchor="middle">6</text>
+<rect x="70" y="40" width="670" height="360" fill="none" stroke="black"/>
+<text x="405.0" y="442" text-anchor="middle">actual bitrate (Mbit/s)</text>
+<text transform="translate(16,220.0) rotate(-90)" text-anchor="middle">PSNR-Y (dB)</text>
+<polyline fill="none" stroke="#d62728" stroke-width="2" points="109.7,383.6 133.7,333.6 181.0,297.0 231.8,243.7 282.8,215.9 389.1,164.1 495.4,127.7 708.1,72.9"/>
+<circle cx="109.7" cy="383.6" r="3.5" fill="#d62728"/>
+<circle cx="133.7" cy="333.6" r="3.5" fill="#d62728"/>
+<circle cx="181.0" cy="297.0" r="3.5" fill="#d62728"/>
+<circle cx="231.8" cy="243.7" r="3.5" fill="#d62728"/>
+<circle cx="282.8" cy="215.9" r="3.5" fill="#d62728"/>
+<circle cx="389.1" cy="164.1" r="3.5" fill="#d62728"/>
+<circle cx="495.4" cy="127.7" r="3.5" fill="#d62728"/>
+<circle cx="708.1" cy="72.9" r="3.5" fill="#d62728"/>
+<line x1="620" x2="645" y1="58" y2="58" stroke="#d62728" stroke-width="2"/>
+<text x="650" y="62">h264_vaapi</text>
+<polyline fill="none" stroke="#1f77b4" stroke-width="2" points="110.6,347.7 129.5,270.5 180.6,224.3 232.3,203.1 283.9,191.7 389.1,149.6 495.4,113.2 708.1,56.4"/>
+<circle cx="110.6" cy="347.7" r="3.5" fill="#1f77b4"/>
+<circle cx="129.5" cy="270.5" r="3.5" fill="#1f77b4"/>
+<circle cx="180.6" cy="224.3" r="3.5" fill="#1f77b4"/>
+<circle cx="232.3" cy="203.1" r="3.5" fill="#1f77b4"/>
+<circle cx="283.9" cy="191.7" r="3.5" fill="#1f77b4"/>
+<circle cx="389.1" cy="149.6" r="3.5" fill="#1f77b4"/>
+<circle cx="495.4" cy="113.2" r="3.5" fill="#1f77b4"/>
+<circle cx="708.1" cy="56.4" r="3.5" fill="#1f77b4"/>
+<line x1="620" x2="645" y1="76" y2="76" stroke="#1f77b4" stroke-width="2"/>
+<text x="650" y="80">hevc_vaapi</text>
+</svg>

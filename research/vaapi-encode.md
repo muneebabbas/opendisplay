@@ -311,11 +311,61 @@ dmabufs too).
   ~15-20 ms; a saturating `ffmpeg` encode clocks it higher and does ~5 ms.
   That is most of the latency gap to x264.
 
+## M3: HEVC (2026-11-10)
+
+Branch `linux/hevc`, fork PR #3. Design follows the Mac sender
+(`Mac/StreamConfiguration.swift` `preferredCodec`/`make(codec:)`,
+`Mac/MacSender.swift` `canEncodeHEVC`, `hevcEncoderFailed`):
+
+* **Probe before planning.** od-sender opens its encoder lazily in the encode
+  thread, after `streamConfig` is sent, so the session probes `hevc_vaapi` at
+  the planned HEVC stream size first (cached per size). Each encoder opens its
+  own VA device, so the throwaway probe cannot hit the iHD "destroyed VPP
+  context -> EIO" problem on the live device. `hevc_vaapi` refuses tiny sizes
+  on iHD (384x64: EINVAL), so the probe must use the real size.
+* **Bitstream.** HEVC type `(b0>>1)&0x3f`; a picture starts at
+  `first_slice_segment_in_pic_flag` (MSB of byte 2); suffix SEI (40) stays
+  with its picture; only IDR 19/20 are keyframes (CRA is not: the forced-IDR
+  check relies on `is_idr`). `hevc_vaapi` with an infinite GOP emits
+  VPS/SPS/PPS on each IDR; the sender re-adds them if not.
+* **Fallback.** Open failure in the pipeline, or 30 failed encodes in a row,
+  is reported once on a channel; the session re-plans H.264 from the last
+  hello, replaces the debouncer state, rebuilds and re-announces (~1.1 s).
+  Lasts the whole `run`, reconnects included.
+
+**Live** (iPad, Wi-Fi, 30 s, `results/2026-11-10-wifi-m3` two passes,
+`-reversed` alternating order on scroll):
+
+| | CPU cores | vcs busy | fps sent / iPad | e2e p50 / p95 | Mbit/s |
+|---|---|---|---|---|---|
+| H.264, scroll | 0.15 | 43% | 59.6 / 59 | 25-26 / 31-32 ms | 7.7 |
+| HEVC, scroll | 0.15-0.16 | 43% | 59.6 / 59 | 25-26 / 32 ms | 7.5-7.7 |
+| H.264, video | 0.32-0.33 | 43% | 59.3 / 59 | 29-30 / 39 ms | 28.9 |
+| HEVC, video | 0.34-0.35 | 43% | 59.2 / 59 | 28.5 / 39 ms | 26.4 |
+
+The battery reading on scroll was ~4 W higher for whichever codec ran second
+(swapping the order swapped it): run-order drift, not codec.
+
+**Offline rate-distortion** (`tools/rd_bench.py`,
+`results/2026-11-10-rd-m3`): the same encoders and settings via the ffmpeg
+CLI, 360 frames of 2388x1668@60 from a lossless BT.709 reference, CBR sweeps
+for the curves and the live QVBR 21 setting with 35/8/4M caps.
+
+| source | BD-rate PSNR-Y | BD-rate VMAF | BD-PSNR | live setting (QVBR 21, 35M cap) |
+|---|---|---|---|---|
+| code scroll, 1200 px/s | -31% | ~-45% (linear) | +3.7 dB | 1.11 vs 1.41 Mbit/s, +3.1 dB |
+| full-screen text flood | -12% | ~-16% (linear) | +1.1 dB | both at the cap, +0.75 dB |
+| testsrc2 video | -17% | -35% | +0.9 dB | both at the cap, VMAF 96.4 vs 96.0 |
+
+Quirks: CBR lands at 0.99x the target; the flood cannot go below ~8 Mbit/s
+on either codec (caps under that are not honoured); the 35M cap overshoots
+to ~35.9. VMAF saturates (>= 99.5) on code scrolling above ~2 Mbit/s, so its
+BD numbers come from linear interpolation over few points.
+
 ## Future work this enables
 
-* **HEVC** (`hevc_vaapi`): PROTOCOL.md already negotiates it (`videoCaps`,
-  `streamConfig.codec`), the Mac sender uses it, and the iOS receiver offers
-  it. This GPU encodes HEVC Main/Main10 and 4:4:4 (#313).
+* **HEVC** (`hevc_vaapi`): done in M3 (Main), see "M3: HEVC" above. 4:4:4
+  needs an iPad app change and a protocol field (PLAN M3).
 * **AV1** (#312): Lunar Lake decodes AV1; encode depends on the GPU.
 * **NVENC** (`h264_nvenc`/`hevc_nvenc`) for NVIDIA, where VA-API has no
   encode: the same FFmpeg backend shape, and it accepts system-memory NV12.

@@ -4,55 +4,40 @@ Last updated 2026-11-10. Update this file at the end of every session.
 
 ## State
 
-* **Code:** two stacked topic branches on upstream v1.30.2 (`0f44853`, still
+* **Code:** three stacked topic branches on upstream v1.30.2 (`0f44853`, still
   upstream's latest on 2026-11-10):
   * `linux/vaapi-encoder` (M0): opt-in VA-API H.264 encoder, 3 commits.
     Draft PR https://github.com/muneebabbas/opendisplay/pull/1
   * `linux/vaapi-gpu-convert` (M2), on top: 6 commits. GPU colour conversion
-    through libva VPP (`encoder/vpp.rs`, hand-written dlopen'd FFI), direct
-    surface-mapping upload, no per-frame sync, debug step timings
-    (`encoder/steps.rs`), 7 VA-API tests. Draft PR in the fork (see PLAN).
+    through libva VPP. Draft PR #2.
+  * `linux/hevc` (M3), on top: 3 commits. HEVC over VA-API when the receiver
+    offers it. Draft PR https://github.com/muneebabbas/opendisplay/pull/3
   Nothing has been sent upstream.
-* **M1 and M2 are done.** On the iPad over Wi-Fi, `--encoder=vaapi` now does
-  60 fps full-motion video at **0.33 cores** (x264: 3.08) and scrolling at
-  **0.15 cores** (x264: 2.43), with latency equal to or better than x264 and
-  exact BT.709 colours. Numbers and the why: PLAN target table,
-  `research/vaapi-encode.md` "Stage A2: result".
-* **The BT.601 colour "blocker" was FFmpeg**: `scale_vaapi` picks iHD's
-  Explicit mode and iHD reads the matrix from the primaries only. Through
-  libva with `output_color_standard = BT709` it is exact.
-* VA-API is still opt-in (`--encoder=vaapi`); `auto` is unchanged.
+* **M1, M2 and M3 are done.** `--encoder=vaapi` streams 2388x1668 at 60 fps
+  at 0.15 (scroll) / 0.33 (video) cores, latency at or below x264, exact
+  BT.709, and now **HEVC** to the iPad (PHONE-STATS `"codec":"HEVC"`).
+  HEVC costs the same as H.264 live; it wins on quality per bit: BD-rate
+  PSNR-Y -31% on code scrolling, -17% on video (PLAN M3,
+  `research/vaapi-encode.md` "M3: HEVC").
+* VA-API (and so HEVC) is still opt-in (`--encoder=vaapi`); `auto` unchanged.
+* **Not yet checked by eye:** the HEVC picture on the iPad (stats and decode
+  are clean; the colour test passes for HEVC). Look at it once.
+* **Pending decision (owner):** the branch/release model proposed on
+  2026-11-10 (`main` mirror, a `release` integration branch taking fork PRs as
+  merges, tags there, upstream merged in, topic branches rebased for
+  upstream PRs). Not set up; ask before doing any of it.
 
-## Next step: M3, HEVC
+## Next step
 
-Create `linux/hevc` from `linux/vaapi-gpu-convert`. Scope agreed on
-2026-11-10 (see PLAN M3):
+Options, in PLAN order (agree with the owner first):
 
-1. Negotiation (`desktop.rs`): parse `hello.videoCaps` HEVC entries (today
-   filtered to H.264). Pick HEVC automatically, no user setting (PROTOCOL
-   6.5 says codec choice is the sender's; the Mac sender does the same),
-   when offered and `hevc_vaapi` opens at the stream size; otherwise H.264.
-   A dev-only override to force H.264 for A/B, like `OD_VAAPI_CPU_CONVERT`.
-2. Encoder (`encoder/ffmpeg.rs`): `hevc_vaapi` with the same low-latency
-   settings (no B-frames, IDR on demand, `async_depth=1`, no SEI). iHD lists
-   HEVC Main / Main10 / 444 / SCC EncSlice; FFmpeg has `hevc_vaapi`.
-3. Bitstream (`opendisplay-proto/src/video.rs`): the NAL parsing is
-   H.264-only (`& 0x1f`, IDR 5, SPS/PPS 7/8). HEVC: type `(b0 >> 1) & 0x3f`,
-   IDR 19/20 (also CRA 21 as a keyframe?), VPS/SPS/PPS 32/33/34. Every HEVC
-   IDR must carry VPS+SPS+PPS (PROTOCOL 5.1); access-unit splitting and
-   `param_sets` prepending must become codec-aware.
-4. `streamConfig.codec = "hevc"`; fall back to H.264 for the rest of the
-   session if the HEVC encoder fails (PROTOCOL 6.5).
-5. Done when: the iPad shows a correct picture with `codec=hevc`, sane
-   PHONE-STATS, reconnect works, H.264 still works when HEVC is not
-   offered, unit tests for NAL parsing and codec choice, CI checks pass.
-   Then benchmark HEVC vs H.264 (bitrate at equal quality on scroll is the
-   expected win).
-
-Smaller follow-ups for M2 (not blocking): overlap the upload with the
-previous encode (convert-stage thread, ~2.5-3 ms latency); consider VA-API
-in `auto`; check AMD (radeonsi) if a machine is available; the EIO after
-destroying a VPP context on iHD.
+1. **M4 zero-copy capture** (`linux/dmabuf-capture`, on `linux/hevc`):
+   dmabuf capture imported as VA surfaces; removes the ~2.5 ms upload and is
+   what makes 120 fps realistic.
+2. Small M2/M3 follow-ups: VA-API in `auto` (then HEVC is automatic for
+   everyone with a VA-API GPU); overlap upload with encode; why the live
+   `foot`/`seq` scroll is so much cheaper than the synthetic flood; AMD.
+3. HEVC 4:4:4 only after an iPad app change (PLAN M3).
 
 ## Resume on any machine
 
@@ -97,6 +82,14 @@ Keep up with upstream: `~/projects/opendisplay-fork/tools/sync-upstream.sh`
   do not compile while it runs (skews CPU and battery). Records an idle
   battery baseline, `bat_w_*`, and GPU engine busy from DRM fdinfo
   (`gpu_*` system-wide, `sender_gpu_*` the sender; vcs = encode, vecs = VPP).
+* **Codec A/B:** harness variants `vaapi-h264` (`OD_FORCE_H264=1`) and
+  `vaapi-hevc`; the result rows carry the iPad's `codec`. Debug builds take
+  `OD_FAIL_HEVC_ENCODER=1` / `OD_FAIL_HEVC_SESSION=1` to test the fallbacks.
+* **Reconnect test without touching the iPad:** `results/2026-11-10-m3-functional/proxy.py
+  127.0.0.1:47001 <ipad>`, point the sender at the proxy, `pkill -USR1 -f
+  '^python3 -I .*proxy.py'` cuts the link.
+* **Rate-distortion:** `python3 -I tools/rd_bench.py --work ~/odrd-work --out
+  results/<dir>` (~20 min; libvmaf; `--dry-run` prints the ffmpeg commands).
 * **Where a frame's time goes:** `RUST_LOG=debug` logs per-step averages
   (upload, vpp, send_frame, receive) every 2 s. `OD_VAAPI_CPU_CONVERT=1`
   forces the old swscale path for A/B.
@@ -130,6 +123,11 @@ Keep up with upstream: `~/projects/opendisplay-fork/tools/sync-upstream.sh`
   VPP `None` either (it guesses by resolution). See research doc.
 * **Destroying a VPP context on iHD** made later CPU-path uploads on the
   same device fail with EIO; the code keeps it alive after a GPU failure.
+* **Battery order effect:** in an A/B the second run of a workload can read
+  ~4 W higher regardless of encoder; alternate the order before believing a
+  power difference.
+* **`hevc_vaapi` on iHD rejects tiny sizes** (384x64: EINVAL); probe at the
+  real stream size.
 * **Tools installed for this work:** `perf intel-gpu-tools gst-plugin-va
   gst-libav nasm`. `kernel.perf_event_paranoid` was set to 0 for profiling;
   it resets to 2 on reboot (or `sudo sysctl kernel.perf_event_paranoid=2`).

@@ -19,6 +19,7 @@ encode, with the CPU only handling the compressed stream.
 | fps under full motion | 59.5 | 46 | **59** | **60**, later **120** |
 | Colours | exact BT.709 | exact BT.709 | exact BT.709 (tests) | **exact BT.709** (flat-patch test) |
 | Battery draw, scroll / video (idle ~6.6 W) | 18.9 / 14.4 W | 17.1 / 14.1 W | 15.0 / 13.4 W | measured, clearly lower |
+| Bits at equal quality, HEVC vs H.264 (M3) | | | BD-rate -31% code scroll, -17% video | **lower** |
 
 Numbers (2026-11-10, iPad over Wi-Fi, 30 s windows, on battery): x264 and M2 from
 `results/2026-11-10-wifi-m2-final/` (two passes, consistent); stage A from
@@ -67,18 +68,34 @@ Branch `linux/vaapi-gpu-convert`, stacked on `linux/vaapi-encoder`.
 * Done when: the M1 video workload is well under 1 core at 60 fps with exact
   colours. Then VA-API can join `auto` (in this fork at least).
 
-### M3 HEVC
-Branch `linux/hevc`, on M2 (works on stage A too).
-* The protocol already supports it (PROTOCOL.md 6.5: `hello.videoCaps`,
-  `streamConfig.codec`); the Mac sender uses it; the iPad app offers HEVC up
-  to its window size at 60 fps.
-* od-sender: parse `videoCaps`, pick HEVC when offered and `hevc_vaapi`
-  opens, HEVC NAL handling (VPS/SPS/PPS, IDR rules in PROTOCOL.md), report
-  in `streamConfig`, fall back to H.264 for the session if HEVC fails.
-* Expected gain: quality in motion and on Wi-Fi / low bitrate (upstream's
-  M5 measurements: 6 Mbit/s HEVC ~ 18 Mbit/s H.264 while scrolling), not
-  CPU or latency.
-* Later: HEVC 4:4:4 (the iGPU encodes it; iPad decode support unknown).
+### M3 HEVC (done, 2026-11-10)
+Branch `linux/hevc` (3 commits on `linux/vaapi-gpu-convert`), fork draft PR #3.
+* With `--encoder=vaapi`, HEVC is picked automatically when `hello.videoCaps`
+  offers it and `hevc_vaapi` opens at the stream size (probe cached per size),
+  like the Mac sender (PROTOCOL 6.5). HEVC plans skip the legacy ceiling and
+  the H.264 level limits. Late failure (open fails in the pipeline, or 30
+  failed encodes) re-plans as H.264 for the rest of the run, reconnects
+  included (Mac: `hevcEncoderFailed` on `MacSender`, never reset).
+* Knobs: `OD_FORCE_H264=1` (release, for A/B); debug-only
+  `OD_FAIL_HEVC_ENCODER=1` / `OD_FAIL_HEVC_SESSION=1` (Mac's
+  `failHEVCEncoder` / `failHEVCSession`). `doctor` reports HEVC.
+* Verified on the iPad: PHONE-STATS `"codec":"HEVC"`, 59 fps; forced H.264,
+  probe failure, late fallback, reconnect, and a receiver without HEVC.
+* **Result:** live, HEVC equals H.264 on CPU (0.15 / 0.33 cores), video-engine
+  time, fps and latency (`results/2026-11-10-wifi-m3*`). The win is quality
+  per bit (`results/2026-11-10-rd-m3`): BD-rate PSNR-Y -31% on code
+  scrolling, -12% on a full-screen text flood, -17% on video; at the live
+  setting (QVBR 21) code scrolling takes 1.11 vs 1.41 Mbit/s and is +3.1 dB.
+* Later: **HEVC 4:4:4** (sharper coloured text). The iGPU encodes it, but the
+  iPad app asks VideoToolbox for NV12 (`Shared/StreamReceiver.swift`,
+  `kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`) and renders NV12, so it
+  would subsample again; `videoCaps` has no profile/chroma field, and
+  `"hevc"` means Main in practice. Needs an app change (Xcode on a Mac) and a
+  protocol field; `od-receiver` could test the sender side first. SCC: likely
+  no VideoToolbox decode (unverified).
+* Open: the live `foot`/`seq` scroll bench sends ~7.7 Mbit/s for both codecs
+  at QVBR 21, while the synthetic flood hits the 35M cap: the live content is
+  much easier than the synthetic one; not investigated.
 
 ### M4 Zero-copy capture (stage B)
 Branch `linux/dmabuf-capture`, on M2.

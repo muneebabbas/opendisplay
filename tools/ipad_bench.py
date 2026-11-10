@@ -169,9 +169,17 @@ def idle_baseline():
 def run(encoder, workload):
     log_path = os.path.join(outdir, f"tx-{encoder}-{workload}.log")
     log = open(log_path, "w")
+    # Variants: `vaapi-h264` forces H.264 on VA-API (OD_FORCE_H264=1), `vaapi-hevc`
+    # is plain VA-API (HEVC when the receiver offers it). Others are --encoder values.
+    name, env = encoder, dict(os.environ)
+    if encoder == "vaapi-h264":
+        name, env["OD_FORCE_H264"] = "vaapi", "1"
+    elif encoder == "vaapi-hevc":
+        name = "vaapi"
+        env.pop("OD_FORCE_H264", None)
     p = subprocess.Popen(
-        [sender, "run", f"--to={target}", f"--encoder={encoder}", f"--workspace={WS}"],
-        stdout=log, stderr=subprocess.STDOUT)
+        [sender, "run", f"--to={target}", f"--encoder={name}", f"--workspace={WS}"],
+        stdout=log, stderr=subprocess.STDOUT, env=env)
     # Wait until the session is up.
     t0 = time.time()
     while time.time() - t0 < 20:
@@ -215,6 +223,7 @@ def run(encoder, workload):
     pk = lambda k: [float(s[k]) for s in phone if k in s]
     return {
         "encoder": encoder, "workload": workload,
+        "codec": next((s["codec"] for s in reversed(phone) if "codec" in s), None),
         "cpu_cores": round(cores, 3),
         "media_mhz_med": med(freqs),
         **bat_fields(watts), **gpu,

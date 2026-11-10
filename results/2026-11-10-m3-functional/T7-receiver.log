@@ -1,0 +1,14 @@
+2026-11-10T14:04:36.379276Z  INFO advertising muneeb-zenbook._opensidecar._tcp.local. on port 9100 (id 55B97FA7-C514-40E6-9C03-CAA4935AA4EF, pv 3)
+2026-11-10T14:04:36.379411Z  INFO listening on 127.0.0.1:9100 (2388x1668 @60 scale 2, cursor UDP Some(9101), video: none)
+2026-11-10T14:04:36.408937Z  INFO watching logind for sleep
+2026-11-10T14:04:41.381502Z  INFO stats {"decErr":0,"decoder":"none","fps":0.0,"idr":0,"mbps":0.0,"offsetKnown":false,"stalls":0,"transport":"wifi"}
+2026-11-10T14:04:42.284766Z  INFO sender connected from 127.0.0.1:41228
+2026-11-10T14:04:42.285288Z  INFO welcome: sender pv 3 min 1
+2026-11-10T14:04:42.466490Z  INFO streamConfig h264 2388x1668 @60
+2026-11-10T14:04:46.381135Z  INFO stats {"decErr":0,"decoder":"none","e2e50":14.8,"e2e95":32.3,"fps":36.6,"idr":1,"mbps":4.0,"net50":0.2,"offsetKnown":true,"rtt":0.13623046875,"stalls":0,"transport":"wifi"}
+2026-11-10T14:04:51.380890Z  INFO stats {"decErr":0,"decoder":"none","e2e50":12.5,"e2e95":13.9,"fps":58.2,"idr":0,"mbps":7.4,"net50":0.2,"offsetKnown":true,"rtt":0.13623046875,"stalls":0,"transport":"wifi"}
+2026-11-10T14:04:56.380990Z  INFO stats {"decErr":0,"decoder":"none","e2e50":13.3,"e2e95":14.1,"fps":57.8,"idr":0,"mbps":7.3,"net50":0.2,"offsetKnown":true,"rtt":0.13623046875,"stalls":0,"transport":"wifi"}
+2026-11-10T14:04:57.935388Z  INFO sender 127.0.0.1:41228 disconnected
+2026-11-10T14:05:01.381611Z  INFO stats {"decErr":0,"decoder":"none","e2e50":13.3,"e2e95":14.5,"fps":17.8,"idr":0,"mbps":2.2,"net50":0.2,"offsetKnown":true,"rtt":0.13623046875,"stalls":0,"transport":"wifi"}
+2026-11-10T14:05:06.174384Z  INFO shutting down
+2026-11-10T14:05:06.174542Z  INFO Report { connections: 1, adopted_over_live: 0, welcomes: 1, video_frames: 852, idr_frames: 1, decoder_resets: 1, decode_errors: 0, cursor_updates: 0, closes: 0, input_events: 0, sleeps: 0, rendered_frames: None }
