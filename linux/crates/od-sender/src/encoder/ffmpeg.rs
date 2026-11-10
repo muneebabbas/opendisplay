@@ -25,6 +25,7 @@ use tracing::{info, warn};
 
 use super::convert::{Converter, band_count};
 use super::stage::{YuvFrame, new_video, tag_bt709};
+use super::steps::Steps;
 use super::vpp::{GpuConvert, hw_surface, new_pool};
 use super::{Encoded, EncoderSettings};
 use crate::backend::PixelFormat;
@@ -127,6 +128,8 @@ pub struct FfmpegEncoder {
     /// kept until the encoder closes: with iHD, destroying a VPP context
     /// makes later CPU uploads to the same device fail (EIO).
     gpu_failed: bool,
+    /// Where the encode calls' time goes, logged at debug level.
+    steps: Steps,
 }
 
 static INIT: Once = Once::new();
@@ -259,6 +262,7 @@ impl FfmpegEncoder {
             hw,
             gpu,
             gpu_failed: false,
+            steps: Steps::new(name),
         })
     }
 
@@ -282,8 +286,16 @@ impl FfmpegEncoder {
         captured_at: Instant,
     ) -> Result<Vec<Encoded>> {
         let t0 = Instant::now();
+        self.steps.start();
         if let (Some(gpu), false) = (&mut self.gpu, self.gpu_failed) {
-            match Self::convert_on_gpu(gpu, self.hw.as_ref(), pixels, stride, format) {
+            match Self::convert_on_gpu(
+                gpu,
+                self.hw.as_ref(),
+                pixels,
+                stride,
+                format,
+                &mut self.steps,
+            ) {
                 Ok(mut surface) => return self.send(&mut surface, force_idr, captured_at, t0),
                 Err(e) => {
                     // A driver that failed once will fail again: keep
@@ -297,6 +309,7 @@ impl FfmpegEncoder {
         }
         self.convert
             .convert(pixels, stride, format, &mut self.yuv)?;
+        self.steps.lap("convert");
         let mut yuv = std::mem::replace(&mut self.yuv, ff::frame::Video::empty());
         let out = self.submit(&mut yuv, force_idr, captured_at, t0);
         self.yuv = yuv;
@@ -313,6 +326,7 @@ impl FfmpegEncoder {
         captured_at: Instant,
     ) -> Result<Vec<Encoded>> {
         let t0 = Instant::now();
+        self.steps.start();
         let v = frame.video();
         if (v.format(), v.width(), v.height())
             != (self.yuv.format(), self.yuv.width(), self.yuv.height())
@@ -343,10 +357,11 @@ impl FfmpegEncoder {
         pixels: &[u8],
         stride: u32,
         format: PixelFormat,
+        steps: &mut Steps,
     ) -> Result<ff::frame::Video> {
         let hw = hw.ok_or_else(|| anyhow!("no VA-API surfaces"))?;
         let mut surface = hw_surface(hw.frames)?;
-        gpu.convert(&surface, pixels, stride, format)?;
+        gpu.convert(&surface, pixels, stride, format, steps)?;
         tag_bt709(&mut surface);
         Ok(surface)
     }
@@ -361,6 +376,7 @@ impl FfmpegEncoder {
         match &self.hw {
             Some(hw) => {
                 let mut surface = hw.upload(frame)?;
+                self.steps.lap("upload");
                 self.send(&mut surface, force_idr, captured_at, t0)
             }
             None => self.send(frame, force_idr, captured_at, t0),
@@ -383,6 +399,7 @@ impl FfmpegEncoder {
             ff::picture::Type::None
         });
         self.enc.send_frame(frame).context("send_frame")?;
+        self.steps.lap("send_frame");
         self.in_flight.push_back((self.pts, captured_at, t0));
         // 1/60 s apart in the time base; the encoder only needs monotonic pts.
         self.pts += 16_667;
@@ -408,6 +425,8 @@ impl FfmpegEncoder {
                 });
             }
         }
+        self.steps.lap("receive_packet");
+        self.steps.finish();
         Ok(out)
     }
 
@@ -661,7 +680,8 @@ mod tests {
         for format in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888] {
             let (px, stride) = patches(format);
             let dst = hw_surface(hw.frames).unwrap();
-            gpu.convert(&dst, &px, stride, format).unwrap();
+            gpu.convert(&dst, &px, stride, format, &mut Steps::new("test"))
+                .unwrap();
             let got = download(&dst).unwrap();
             // swscale is the reference the receiver's colours are defined by.
             let mut want = new_video(Pixel::NV12, w as u32, h as u32);
@@ -789,7 +809,14 @@ mod tests {
             let mut conv = Vec::new();
             for _ in 0..30 {
                 let t = Instant::now();
-                g.convert(&dst, &px, stride, PixelFormat::Xrgb8888).unwrap();
+                g.convert(
+                    &dst,
+                    &px,
+                    stride,
+                    PixelFormat::Xrgb8888,
+                    &mut Steps::new("test"),
+                )
+                .unwrap();
                 conv.push(t.elapsed().as_secs_f64() * 1000.0);
             }
             conv.sort_by(f64::total_cmp);

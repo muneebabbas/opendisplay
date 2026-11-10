@@ -29,6 +29,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ff::format::Pixel;
 use ffmpeg_next as ff;
 
+use super::steps::Steps;
 use crate::backend::PixelFormat;
 
 type VAStatus = c_int;
@@ -379,6 +380,7 @@ impl GpuConvert {
         pixels: &[u8],
         stride: u32,
         format: PixelFormat,
+        steps: &mut Steps,
     ) -> Result<()> {
         let (w, h, stride) = (self.width as usize, self.height as usize, stride as usize);
         if stride < w * 4 || pixels.len() < stride * (h - 1) + w * 4 {
@@ -406,7 +408,8 @@ impl GpuConvert {
         if err < 0 {
             bail!("uploading to a VA surface: {}", ff::Error::from(err));
         }
-        self.run(surface_id(&src), surface_id(dst))
+        steps.lap("upload");
+        self.run(surface_id(&src), surface_id(dst), steps)
     }
 
     fn source_pool(&mut self, pix: Pixel) -> Result<*mut ff::ffi::AVBufferRef> {
@@ -420,7 +423,7 @@ impl GpuConvert {
     }
 
     /// Render `src` into `dst` and wait for it.
-    fn run(&self, src: VASurfaceID, dst: VASurfaceID) -> Result<()> {
+    fn run(&self, src: VASurfaceID, dst: VASurfaceID, steps: &mut Steps) -> Result<()> {
         let va = self.va;
         let region = VaRectangle {
             x: 0,
@@ -461,7 +464,12 @@ impl GpuConvert {
                 let ended = (va.vaEndPicture)(self.display, self.context);
                 va.check("vaRenderPicture", rendered)
                     .and_then(|()| va.check("vaEndPicture", ended))
-                    .and_then(|()| va.check("vaSyncSurface", (va.vaSyncSurface)(self.display, dst)))
+                    .and_then(|()| {
+                        steps.lap("vpp submit");
+                        let synced = (va.vaSyncSurface)(self.display, dst);
+                        steps.lap("vpp sync");
+                        va.check("vaSyncSurface", synced)
+                    })
             })
         };
         // SAFETY: `buf` was created above.
@@ -484,7 +492,7 @@ impl GpuConvert {
                 row.chunks_exact_mut(4).for_each(|p| p.copy_from_slice(&c));
             }
             let dst = hw_surface(dst_frames)?;
-            self.convert(&dst, &px, (w * 4) as u32, format)?;
+            self.convert(&dst, &px, (w * 4) as u32, format, &mut Steps::new("verify"))?;
             let nv12 = download(&dst)?;
             for (at, want, name) in [
                 (h / 4, [63, 102, 240], "red"),

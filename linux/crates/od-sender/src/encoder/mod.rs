@@ -22,6 +22,7 @@ mod convert;
 mod ffmpeg;
 mod openh264;
 mod stage;
+mod steps;
 mod v4l2;
 mod vpp;
 
