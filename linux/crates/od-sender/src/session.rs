@@ -411,8 +411,10 @@ impl EncodePipeline {
                 let force = enc_force.swap(false, Ordering::Relaxed);
                 let result = encoder.as_mut().unwrap().encode(&frame, force);
                 if let (Err(e), FrameBuf::Dmabuf(_), Some(g)) = (&result, &frame.buf, &enc_gpu) {
-                    // Not retried: capture switches to shared memory for good
-                    // and the next frame is an IDR from there.
+                    // Not retried: capture switches to shared memory for the
+                    // rest of the run (also when the encoder could never take
+                    // GPU frames, as decided above) and the next frame is an
+                    // IDR from there.
                     if g.wanted() {
                         warn!(
                             "encoding a GPU frame failed, capturing into shared memory from now on: {e:#}"
