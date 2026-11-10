@@ -11,16 +11,20 @@
 //!    built without libx264 (Fedora's `ffmpeg-free`).
 //!
 //! `vaapi` — Intel/AMD hardware encode through FFmpeg (`h264_vaapi`) — is
-//! opt-in for now: frames are still converted to NV12 on the CPU, which is
-//! most of the sender's CPU time, and at the GPU's power-saving clocks it
-//! adds latency compared with x264. It joins `auto` ahead of x264 once the
-//! conversion moves to the GPU too.
+//! opt-in for now. The GPU converts the capture's RGB to NV12 as well (the
+//! driver's video-processing pipeline, `vpp.rs`), so the CPU only copies the
+//! pixels into a surface; where the driver cannot, or does not get the
+//! colours right, swscale converts on the CPU as for the other encoders. At
+//! the GPU's power-saving clocks it can still add latency compared with
+//! x264, so it does not join `auto` yet.
 
 mod convert;
 mod ffmpeg;
 mod openh264;
 mod stage;
+mod steps;
 mod v4l2;
+mod vpp;
 
 pub use stage::{ConvertStage, MIN_STAGE_WIDTH, YuvFrame};
 
@@ -80,7 +84,7 @@ pub struct Encoded {
 }
 
 enum Imp {
-    Ffmpeg(ffmpeg::FfmpegEncoder),
+    Ffmpeg(Box<ffmpeg::FfmpegEncoder>),
     OpenH264(Box<openh264::OpenH264Encoder>),
 }
 
@@ -116,12 +120,12 @@ impl Encoder {
                 }
                 Backend::V4l2m2m => {
                     ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::V4l2m2m, width, height, s)
-                        .map(Imp::Ffmpeg)
+                        .map(|e| Imp::Ffmpeg(Box::new(e)))
                 }
                 Backend::Vaapi => ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::Vaapi, width, height, s)
-                    .map(Imp::Ffmpeg),
+                    .map(|e| Imp::Ffmpeg(Box::new(e))),
                 Backend::X264 => ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::X264, width, height, s)
-                    .map(Imp::Ffmpeg),
+                    .map(|e| Imp::Ffmpeg(Box::new(e))),
                 Backend::Openh264 => openh264::OpenH264Encoder::new(width, height, s)
                     .map(|e| Imp::OpenH264(Box::new(e))),
                 Backend::Auto => unreachable!(),
@@ -154,7 +158,13 @@ impl Encoder {
     }
 
     pub fn label(&self) -> &'static str {
-        self.backend.label()
+        match (&self.imp, self.backend) {
+            (Imp::Ffmpeg(e), Backend::Vaapi) if e.gpu_convert() => {
+                "VA-API (hardware), GPU colour conversion"
+            }
+            (Imp::Ffmpeg(_), Backend::Vaapi) => "VA-API (hardware), CPU colour conversion",
+            _ => self.backend.label(),
+        }
     }
 
     pub fn dimensions(&self) -> (u32, u32) {
@@ -165,6 +175,8 @@ impl Encoder {
     /// ([`FrameBuf::Yuv`] from a [`ConvertStage`]), if any.
     pub fn yuv_format(&self) -> Option<ff::format::Pixel> {
         match &self.imp {
+            // The GPU converts inside the encoder: raw frames pass the stage.
+            Imp::Ffmpeg(e) if e.gpu_convert() => None,
             Imp::Ffmpeg(e) => Some(e.format()),
             // OpenH264 converts with its own coefficients and announces no
             // BT.709 colour; its frames stay unconverted.
