@@ -36,10 +36,15 @@ Last updated 2026-11-10 (end of M4). Update this file at the end of every sessio
 * VA-API (and so HEVC and GPU capture) is still opt-in (`--encoder=vaapi`).
 * **Not yet checked by eye:** the stream on the iPad itself since M3 (stats,
   decode and colour tests are clean). Look at it once.
-* **Pending decision (owner):** the branch/release model proposed on
-  2026-11-10 (`main` mirror, a `release` integration branch taking fork PRs as
-  merges, tags there, upstream merged in, topic branches rebased for
-  upstream PRs). Not set up; ask before doing any of it.
+* **Fork model (decided 2026-11-10):** `main` is ours, the build branch: the
+  stacked PRs #1-#4 are merged into it bottom-up with merge commits once the
+  owner has reviewed them (review threads ran with the code-review skill, one
+  per PR); `upstream/main` is merged in by `tools/sync-upstream.sh`. Upstream
+  PRs go from `up/<name>` branches cut from `upstream/main`. See README
+  "Branch rules". After a stack is merged, drop it from `STACKS`.
+* **Investigations filed** as fork issues #5-#12 (latency: media clock,
+  120 Hz virtual output, capture->encode gap, transport, iPad 120 Hz; CPU:
+  NAL copies, VPP on imported surfaces, coded-buffer copy).
 
 ## Next step
 
