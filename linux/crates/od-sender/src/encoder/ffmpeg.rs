@@ -677,7 +677,15 @@ mod tests {
         let Some((hw, mut gpu)) = gpu(w as u32, h as u32) else {
             return;
         };
-        for format in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888] {
+        // Both upload paths: the surface mapping, then FFmpeg's transfer.
+        let mapped = gpu.direct_upload();
+        for (direct, format) in [
+            (mapped, PixelFormat::Xrgb8888),
+            (mapped, PixelFormat::Xbgr8888),
+            (false, PixelFormat::Xrgb8888),
+            (false, PixelFormat::Xbgr8888),
+        ] {
+            gpu.set_direct_upload(direct);
             let (px, stride) = patches(format);
             let dst = hw_surface(hw.frames).unwrap();
             gpu.convert(&dst, &px, stride, format, &mut Steps::new("test"))
@@ -694,7 +702,7 @@ mod tests {
                 let (g, wnt) = (sample(&got, at.0, at.1), sample(&want, at.0, at.1));
                 assert!(
                     g.iter().zip(wnt).all(|(g, w)| g.abs_diff(w) <= 1),
-                    "{format:?} {rgb:?}: GPU {g:?}, swscale {wnt:?}"
+                    "{format:?} {rgb:?} (mapped upload {direct}): GPU {g:?}, swscale {wnt:?}"
                 );
             }
             // Known values for red and white, so the reference itself is checked.
