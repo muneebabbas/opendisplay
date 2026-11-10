@@ -93,7 +93,7 @@ pub enum Dev {
         gpu_decline_after: Option<f64>,
         /// With `--gpu`: offer only LINEAR buffers (sets the development
         /// hook OD_DEV_LINEAR_CAPTURE=1), so `--save` can read the last GPU
-        /// frame back through a dmabuf mmap.
+        /// frame back through a dmabuf mmap. Debug builds only.
         #[arg(long)]
         gpu_linear: bool,
     },
@@ -271,6 +271,8 @@ pub fn run(cmd: Dev) -> Result<()> {
             gpu_linear,
         } => {
             if gpu_linear {
+                // The capture reads the hook in debug builds only.
+                anyhow::ensure!(cfg!(debug_assertions), "--gpu-linear needs a debug build");
                 // SAFETY: set before this command starts any thread.
                 unsafe { std::env::set_var("OD_DEV_LINEAR_CAPTURE", "1") };
             }
@@ -733,18 +735,23 @@ fn save_dmabuf_ppm(buf: &crate::backend::Dmabuf, path: &std::path::Path) -> Resu
         )
     };
     if r != 0 {
-        info!(
+        warn!(
             "DMA_BUF_IOCTL_SYNC start: {}",
             std::io::Error::last_os_error()
         );
     }
     // SAFETY: the mapping is `len` bytes and stays until munmap below.
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    // Byte order in memory (little-endian fourccs): XRGB is B, G, R, X;
+    // XBGR is R, G, B, X.
+    let (r_at, b_at) = match buf.format {
+        crate::backend::PixelFormat::Xrgb8888 | crate::backend::PixelFormat::Argb8888 => (2, 0),
+        crate::backend::PixelFormat::Xbgr8888 | crate::backend::PixelFormat::Abgr8888 => (0, 2),
+    };
     let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
     for row in bytes[plane.offset as usize..].chunks(plane.stride as usize) {
         for px in row[..w * 4].chunks(4) {
-            // XRGB8888 / ARGB8888 little-endian: B, G, R, X
-            ppm.extend_from_slice(&[px[2], px[1], px[0]]);
+            ppm.extend_from_slice(&[px[r_at], px[1], px[b_at]]);
         }
     }
     let mut sync = SYNC_END | SYNC_READ;
