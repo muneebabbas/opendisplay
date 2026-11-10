@@ -89,11 +89,11 @@ receiver's decoder advertises them, and never above its panel rate. Lower it
 
 `auto` uses the first encoder that opens, in this order: `v4l2m2m` (a V4L2
 hardware encoder through FFmpeg, where the machine has one), `x264`,
-`openh264`. `vaapi` (Intel and AMD GPUs through FFmpeg; needs the GPU's
+`openh264`. `vaapi` (GPUs through FFmpeg, tested on Intel; needs the GPU's
 VA-API driver and an FFmpeg built with VA-API) is never chosen by `auto` yet:
 it still converts colours on the CPU and adds some latency, so it only saves
-about a fifth of the sender's CPU. Naming one forces it. `od-sender doctor` lists which encoders
-open on this machine.
+about a fifth of the sender's CPU. Naming one forces it. `od-sender doctor`
+lists which encoders open on this machine.
 
 ### cursor
 

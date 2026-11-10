@@ -19,7 +19,7 @@ between the two devices. **The stream is not encrypted**, so use it on a
 network you trust.
 
 Video is encoded on the CPU (x264) by default. Hardware encoding through
-VA-API (Intel and AMD) is available as an opt-in, `--encoder vaapi`, when
+VA-API (tested on Intel) is available as an opt-in, `--encoder vaapi`, when
 od-sender is built against an FFmpeg with VA-API, as the Arch package is; the
 release tarball does not have it yet.
 
