@@ -2,7 +2,9 @@
 //! buffer is mapped once, a ready frame goes out as a [`Lease`] on its
 //! buffer, and dropping the lease hands the buffer back for the next frame.
 //! The compositor never writes into a buffer that is lent out, because the
-//! capture loop only attaches buffers it took from the free list.
+//! capture loop only attaches buffers it took from the free list. A GPU
+//! buffer (a dmabuf) is not mapped; it goes out with a [`Token`], which
+//! returns it the same way.
 
 use std::fs::File;
 use std::os::fd::AsRawFd;
@@ -124,19 +126,43 @@ impl Recycler {
     pub fn lease(&self, index: usize, map: Arc<Mapping>, len: usize) -> Lease {
         assert!(len <= map.len);
         Lease {
+            _token: self.token(index),
+            map,
+            len,
+        }
+    }
+
+    /// Lend buffer `index` out without access to its bytes: it comes back
+    /// when the token is dropped, unless the buffers were reset meanwhile.
+    pub fn token(&self, index: usize) -> Token {
+        Token {
             recycler: self.clone(),
             index,
             generation: self.state().generation,
-            map,
-            len,
+        }
+    }
+}
+
+/// Buffer `index` is lent out while this lives.
+pub struct Token {
+    recycler: Recycler,
+    index: usize,
+    generation: u64,
+}
+
+impl Drop for Token {
+    fn drop(&mut self) {
+        let mut s = self.recycler.state();
+        if s.generation == self.generation {
+            s.free.push(self.index);
+            drop(s);
+            self.recycler.0.returned.notify_one();
         }
     }
 }
 
 pub struct Lease {
-    recycler: Recycler,
-    index: usize,
-    generation: u64,
+    _token: Token,
     map: Arc<Mapping>,
     len: usize,
 }
@@ -152,17 +178,6 @@ impl std::ops::Deref for Lease {
 
     fn deref(&self) -> &[u8] {
         self.bytes()
-    }
-}
-
-impl Drop for Lease {
-    fn drop(&mut self) {
-        let mut s = self.recycler.state();
-        if s.generation == self.generation {
-            s.free.push(self.index);
-            drop(s);
-            self.recycler.0.returned.notify_one();
-        }
     }
 }
 
@@ -215,6 +230,28 @@ mod tests {
         assert_eq!(r.take(), None);
         drop(r.lease(0, map, 4));
         assert_eq!(r.take(), Some(0));
+    }
+
+    #[test]
+    fn a_token_returns_its_buffer_on_the_last_drop() {
+        let r = Recycler::default();
+        let hold: Arc<dyn Send + Sync> = Arc::new(r.token(3));
+        let clone = hold.clone();
+        drop(hold);
+        assert_eq!(r.take(), None);
+        drop(clone);
+        assert_eq!(r.take(), Some(3));
+    }
+
+    #[test]
+    fn tokens_from_before_a_reset_are_not_returned() {
+        let r = Recycler::default();
+        let old = r.token(1);
+        r.reset();
+        drop(old);
+        assert_eq!(r.take(), None);
+        drop(r.token(1));
+        assert_eq!(r.take(), Some(1));
     }
 
     #[test]

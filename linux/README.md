@@ -26,6 +26,13 @@ With `--encoder vaapi` the stream is HEVC when the receiver offers it (the
 iPad and Mac apps do) and the GPU can encode it, otherwise H.264. If HEVC
 fails, od-sender falls back to H.264 for the rest of the run;
 `OD_FORCE_H264=1` forces H.264, for comparisons.
+On Hyprland and other compositors with `ext-image-copy-capture`, the frames
+are then also captured into GPU buffers (dmabufs) that the encoder reads
+directly, so the CPU never touches a pixel. If the encoder cannot import
+them, capture falls back to shared memory for the rest of the run; if the
+compositor fails them, until the capture restarts (a reconnect tries GPU
+buffers again). `OD_VAAPI_SHM_CAPTURE=1` forces shared memory, for
+comparisons.
 
 The other direction, a Linux machine as the display, is the
 [Linux receiver](#linux-receiver-beta), also in beta.
@@ -360,9 +367,10 @@ rm -r ~/.config/opendisplay                              # optional: your settin
 * **CPU encoding.** By default encoding runs on the CPU with x264. A 5K
   iMac streamed at 4096x2304 costs noticeably more CPU and shows about 55-70
   ms end to end, against ~20 ms for an iPhone. `--encoder vaapi` moves the
-  encode and the colour conversion to the GPU, which takes most of the load
-  off the CPU, but it can add some latency at the GPU's power-saving clocks
-  and is not chosen automatically yet.
+  encode and the colour conversion (and on Hyprland the capture copy) to
+  the GPU, which takes most of the load off the CPU, but it can add some
+  latency at the GPU's power-saving clocks and is not chosen automatically
+  yet.
 * **Sway, KDE Plasma and GNOME are untested on real desktops.** See
   [Supported setups](#supported-setups).
 * **Android** is untested beyond a first session: touch, scroll, rotation,

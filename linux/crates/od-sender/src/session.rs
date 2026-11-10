@@ -20,8 +20,8 @@ use tracing::{debug, info, warn};
 
 use crate::backend::lock::{self, LockHeld};
 use crate::backend::{
-    Backend, CaptureEvent, CaptureOptions, CursorEvent, DisplayInfo, DisplaySpec, Frame, FrameSink,
-    InputSink, Position, VirtualDisplay,
+    Backend, CaptureEvent, CaptureOptions, CursorEvent, DisplayInfo, DisplaySpec, Frame, FrameBuf,
+    FrameSink, GpuFrames, InputSink, Position, VirtualDisplay,
 };
 use crate::config::{self, Config, Layer};
 use crate::desktop::{self, Debounce, DesktopOptions, DesktopPlan, PlanError, StreamPlan};
@@ -292,6 +292,8 @@ struct EncodePipeline {
     /// An HEVC encoder that cannot open or keeps failing: sent once, after
     /// which the thread stops encoding (the session falls back to H.264).
     codec_failed_rx: mpsc::UnboundedReceiver<String>,
+    /// Capture into GPU buffers while the encoder takes them (VA-API).
+    gpu_frames: Option<GpuFrames>,
 }
 
 /// Consecutive failed `encode` calls after which an HEVC stream is given up.
@@ -309,6 +311,8 @@ impl EncodePipeline {
         let enc_force = force_idr.clone();
         let stage = ConvertStage::new();
         let enc_stage = stage.clone();
+        let gpu_frames = encoder::gpu_capture_wanted(settings.backend).then(GpuFrames::new);
+        let enc_gpu = gpu_frames.clone();
         spawn_reporting_panics("encode", lost_tx.clone(), move || {
             let mut encoder: Option<Encoder> = None;
             let hevc = settings.codec == Codec::Hevc;
@@ -382,6 +386,14 @@ impl EncodePipeline {
                             debug_assert_eq!(e.codec(), settings.codec);
                             settings.backend = e.backend();
                             enc_stage.bind(&e);
+                            if let Some(g) = enc_gpu.as_ref().filter(|g| g.wanted()) {
+                                if !e.takes_dmabuf() {
+                                    info!(
+                                        "capture: shared memory (the encoder cannot take GPU buffers)"
+                                    );
+                                    g.decline();
+                                }
+                            }
                             encoder = Some(e);
                             enc_force.store(true, Ordering::Relaxed);
                         }
@@ -397,7 +409,25 @@ impl EncodePipeline {
                     }
                 }
                 let force = enc_force.swap(false, Ordering::Relaxed);
-                match encoder.as_mut().unwrap().encode(&frame, force) {
+                let result = encoder.as_mut().unwrap().encode(&frame, force);
+                if let (Err(e), FrameBuf::Dmabuf(_), Some(g)) = (&result, &frame.buf, &enc_gpu) {
+                    // Not retried: capture switches to shared memory for the
+                    // rest of the run (also when the encoder could never take
+                    // GPU frames, as decided above) and the next frame is an
+                    // IDR from there.
+                    if g.wanted() {
+                        warn!(
+                            "encoding a GPU frame failed, capturing into shared memory from now on: {e:#}"
+                        );
+                    } else {
+                        debug!("GPU frame dropped while capture switches to shared memory: {e:#}");
+                    }
+                    encoder::gpu_capture_failed();
+                    g.decline();
+                    enc_force.store(true, Ordering::Relaxed);
+                    continue;
+                }
+                match result {
                     Ok(units) => {
                         failures = 0;
                         if force && !units.iter().any(|u| u.unit.is_idr) {
@@ -439,7 +469,13 @@ impl EncodePipeline {
             lost_tx,
             lost_rx,
             codec_failed_rx,
+            gpu_frames,
         })
+    }
+
+    /// For the capture: GPU frames while the encoder takes them.
+    fn gpu_frames(&self) -> Option<GpuFrames> {
+        self.gpu_frames.clone()
     }
 
     /// The capture side: a frame replaces one the busy encoder has not
@@ -589,7 +625,13 @@ fn build(
             }
         }
     }
-    display.start_capture(CaptureOptions { cursor: painted }, pipe.sink())?;
+    display.start_capture(
+        CaptureOptions {
+            cursor: painted,
+            gpu: pipe.gpu_frames(),
+        },
+        pipe.sink(),
+    )?;
     let input = match display.input() {
         Ok(i) => Some(i),
         Err(e) => {

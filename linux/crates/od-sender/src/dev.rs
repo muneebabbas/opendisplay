@@ -66,7 +66,8 @@ pub enum Dev {
         #[arg(long, default_value_t = 0.5)]
         hold: f64,
     },
-    /// Capture an output via ext-image-copy-capture into shm and report frame timing.
+    /// Capture an output via ext-image-copy-capture into shm (or GPU buffers,
+    /// `--gpu`) and report frame timing.
     CaptureTest {
         /// wl_output name; default: first output.
         #[arg(long)]
@@ -81,6 +82,20 @@ pub enum Dev {
         /// Capture protocol (wlr needs --output).
         #[arg(long, value_enum, default_value_t = crate::backend::capture::CaptureChoice::Ext)]
         capture: crate::backend::capture::CaptureChoice,
+        /// Capture into GPU buffers (dmabufs) as for the VA-API encoder, and
+        /// report how many frames came in them and their modifier.
+        #[arg(long)]
+        gpu: bool,
+        /// With `--gpu`: decline GPU frames after this many seconds, as an
+        /// encoder that cannot import them does, to check the switch to
+        /// shared memory.
+        #[arg(long)]
+        gpu_decline_after: Option<f64>,
+        /// With `--gpu`: offer only LINEAR buffers (sets the development
+        /// hook OD_DEV_LINEAR_CAPTURE=1), so `--save` can read the last GPU
+        /// frame back through a dmabuf mmap. Debug builds only.
+        #[arg(long)]
+        gpu_linear: bool,
     },
     /// Follow the pointer cursor of an existing output through the
     /// ext-image-copy-capture cursor session (the cursor side channel's
@@ -251,7 +266,26 @@ pub fn run(cmd: Dev) -> Result<()> {
             cursor,
             save,
             capture,
-        } => capture_test(output, seconds, cursor, save, capture),
+            gpu,
+            gpu_decline_after,
+            gpu_linear,
+        } => {
+            if gpu_linear {
+                // The capture reads the hook in debug builds only.
+                anyhow::ensure!(cfg!(debug_assertions), "--gpu-linear needs a debug build");
+                // SAFETY: set before this command starts any thread.
+                unsafe { std::env::set_var("OD_DEV_LINEAR_CAPTURE", "1") };
+            }
+            capture_test(
+                output,
+                seconds,
+                cursor,
+                save,
+                capture,
+                gpu,
+                gpu_decline_after,
+            )
+        }
         Dev::CursorTest {
             output,
             seconds,
@@ -570,24 +604,78 @@ fn capture_test(
     cursor: bool,
     save: Option<std::path::PathBuf>,
     protocol: crate::backend::capture::CaptureChoice,
+    gpu: bool,
+    gpu_decline_after: Option<f64>,
 ) -> Result<()> {
     use crate::backend::capture::CaptureChoice;
+    let mut gpu_save: Option<crate::backend::Dmabuf> = None;
+    let save_path = save.clone();
     let mut last: Option<(capture::FrameInfo, crate::wayland::shm_pool::Lease)> = None;
-    let keep = |info: &capture::FrameInfo, lease| {
+    let mut keep = |info: &capture::FrameInfo, lease| {
         if save.is_some() {
             last = Some((*info, lease));
         }
     };
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let duration = Duration::from_secs_f64(seconds);
+    // GPU frames: count, the last one's layout, and the distinct buffers.
+    let mut gpu_frames = 0u64;
+    let mut gpu_last: Option<String> = None;
+    let mut gpu_ids = std::collections::BTreeSet::new();
     let n = match protocol {
         CaptureChoice::Wlr => {
             let name = output.as_deref().context("--capture wlr needs --output")?;
             crate::wayland::screencopy::capture_wlr(name, cursor, duration, stop, keep)?
         }
-        _ => capture::capture_shm(output.as_deref(), cursor, duration, stop, keep)?,
+        _ => {
+            let frames = gpu.then(crate::backend::GpuFrames::new);
+            let opts = crate::backend::CaptureOptions {
+                cursor,
+                gpu: frames.clone(),
+            };
+            let started = Instant::now();
+            // The last two GPU frames are held, as the encoder holds the one
+            // it encodes and the one it keeps for a replay.
+            let mut held = std::collections::VecDeque::new();
+            capture::capture(output.as_deref(), &opts, duration, stop, |c| match c {
+                capture::Captured::Shm { info, lease } => keep(&info, lease),
+                capture::Captured::Dmabuf { buf, .. } => {
+                    if let (Some(f), Some(after)) = (&frames, gpu_decline_after) {
+                        if started.elapsed().as_secs_f64() >= after && f.wanted() {
+                            info!("declining GPU frames");
+                            f.decline();
+                        }
+                    }
+                    if save.is_some() {
+                        gpu_save = Some(buf.clone());
+                    }
+                    held.push_back(buf.hold.clone());
+                    if held.len() > 2 {
+                        held.pop_front();
+                    }
+                    gpu_frames += 1;
+                    gpu_ids.insert(buf.id);
+                    gpu_last = Some(format!(
+                        "{}x{} {:?} {} with {} plane(s), stride {}",
+                        buf.width,
+                        buf.height,
+                        buf.format,
+                        crate::dmabuf::modifier_name(buf.modifier),
+                        buf.planes.len(),
+                        buf.planes[0].stride
+                    ));
+                }
+            })?
+        }
     };
     info!("{n} frames captured");
+    if gpu {
+        info!(
+            "{gpu_frames} of them in {} GPU buffers{}",
+            gpu_ids.len(),
+            gpu_last.map_or(String::new(), |l| format!(", last {l}"))
+        );
+    }
     if let (Some(path), Some((info, pixels))) = (save, last) {
         let mut ppm = format!("P6\n{} {}\n255\n", info.width, info.height).into_bytes();
         for row in pixels.chunks(info.stride as usize) {
@@ -599,6 +687,84 @@ fn capture_test(
         std::fs::write(&path, ppm)?;
         info!("wrote {}", path.display());
     }
+    if let (Some(path), Some(buf)) = (&save_path, &gpu_save) {
+        save_dmabuf_ppm(buf, path)?;
+        info!("wrote {}", path.display());
+    }
+    Ok(())
+}
+
+/// Development only: write a LINEAR dmabuf as a PPM, reading it through an
+/// mmap of plane 0 bracketed by DMA_BUF_IOCTL_SYNC.
+fn save_dmabuf_ppm(buf: &crate::backend::Dmabuf, path: &std::path::Path) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    unsafe extern "C" {
+        fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
+        fn munmap(addr: *mut u8, len: usize) -> i32;
+        fn ioctl(fd: i32, request: std::ffi::c_ulong, ...) -> i32;
+    }
+    const PROT_READ: i32 = 1;
+    const MAP_SHARED: i32 = 1;
+    const DMA_BUF_IOCTL_SYNC: u64 = 0x4008_6200;
+    const SYNC_READ: u64 = 1;
+    const SYNC_START: u64 = 0;
+    const SYNC_END: u64 = 4;
+    anyhow::ensure!(
+        buf.modifier == 0,
+        "--save of a GPU frame needs --gpu-linear (modifier is {})",
+        crate::dmabuf::modifier_name(buf.modifier)
+    );
+    let plane = &buf.planes[0];
+    let (w, h) = (buf.width as usize, buf.height as usize);
+    let len = plane.offset as usize + plane.stride as usize * h;
+    let fd = plane.fd.as_raw_fd();
+    // SAFETY: maps `len` bytes of a dmabuf we hold open; checked for MAP_FAILED.
+    let ptr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_SHARED, fd, 0) };
+    anyhow::ensure!(
+        ptr as isize != -1,
+        "mmap of the dmabuf: {}",
+        std::io::Error::last_os_error()
+    );
+    let mut sync = SYNC_START | SYNC_READ;
+    // SAFETY: `sync` is a valid dma_buf_sync for the ioctl.
+    let r = unsafe {
+        ioctl(
+            fd,
+            DMA_BUF_IOCTL_SYNC as std::ffi::c_ulong,
+            &mut sync as *mut u64,
+        )
+    };
+    if r != 0 {
+        warn!(
+            "DMA_BUF_IOCTL_SYNC start: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    // SAFETY: the mapping is `len` bytes and stays until munmap below.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    // Byte order in memory (little-endian fourccs): XRGB is B, G, R, X;
+    // XBGR is R, G, B, X.
+    let (r_at, b_at) = match buf.format {
+        crate::backend::PixelFormat::Xrgb8888 | crate::backend::PixelFormat::Argb8888 => (2, 0),
+        crate::backend::PixelFormat::Xbgr8888 | crate::backend::PixelFormat::Abgr8888 => (0, 2),
+    };
+    let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+    for row in bytes[plane.offset as usize..].chunks(plane.stride as usize) {
+        for px in row[..w * 4].chunks(4) {
+            ppm.extend_from_slice(&[px[r_at], px[1], px[b_at]]);
+        }
+    }
+    let mut sync = SYNC_END | SYNC_READ;
+    // SAFETY: as above; then the mapping is released.
+    unsafe {
+        ioctl(
+            fd,
+            DMA_BUF_IOCTL_SYNC as std::ffi::c_ulong,
+            &mut sync as *mut u64,
+        );
+        munmap(ptr, len);
+    }
+    std::fs::write(path, ppm)?;
     Ok(())
 }
 
@@ -770,7 +936,10 @@ fn smoke(
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<CaptureEvent>(2);
     vd.start_capture(
-        CaptureOptions { cursor: true },
+        CaptureOptions {
+            cursor: true,
+            gpu: None,
+        },
         Box::new(move |ev| {
             let _ = tx.try_send(ev);
         }),

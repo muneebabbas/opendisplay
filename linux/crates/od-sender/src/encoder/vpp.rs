@@ -5,6 +5,13 @@
 //! millisecond of CPU time, against ~15 ms for swscale, and it is the whole
 //! reason the encoder stops being CPU-bound.
 //!
+//! A capture in GPU buffers (dmabufs) skips the upload: each buffer is
+//! imported once as a VA surface (`vaCreateSurfaces` with a DRM PRIME
+//! descriptor), which aliases its memory, and VPP reads it from there
+//! ([`GpuConvert::convert_dmabuf`]). Only linear and uncompressed tiled
+//! buffers are imported
+//! ([`crate::dmabuf::importable_modifier`]).
+//!
 //! The conversion must match what [`super::convert`] does on the CPU, since
 //! the stream announces BT.709 limited range and the receiver converts back
 //! accordingly. That is spelled out to the driver in every pipeline buffer:
@@ -20,9 +27,14 @@
 //! the release tarball) neither needs libva's headers nor fails to start on a
 //! machine without the library. The `VADisplay` is FFmpeg's own, so the
 //! encoder and the conversion share one device. The structs mirror
-//! `<va/va_vpp.h>` of libva 1.x/2.x; their layout is asserted below.
+//! `<va/va_vpp.h>` and `<va/va_drmcommon.h>` of libva 2.x; their layout is
+//! asserted below.
 
+use std::collections::VecDeque;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::fs::File;
+use std::io::{Seek, SeekFrom};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::OnceLock;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -31,7 +43,8 @@ use ffmpeg_next as ff;
 use tracing::debug;
 
 use super::steps::Steps;
-use crate::backend::PixelFormat;
+use crate::backend::{Dmabuf, PixelFormat};
+use crate::dmabuf::{drm_fourcc, modifier_name};
 
 type VAStatus = c_int;
 type VAGenericID = c_uint;
@@ -56,6 +69,18 @@ const VA_FOURCC_BGRX: u32 = u32::from_le_bytes(*b"BGRX");
 const VA_FOURCC_RGBX: u32 = u32::from_le_bytes(*b"RGBX");
 const VA_FOURCC_XRGB: u32 = u32::from_le_bytes(*b"XRGB");
 const VA_FOURCC_XBGR: u32 = u32::from_le_bytes(*b"XBGR");
+const VA_RT_FORMAT_RGB32: c_uint = 0x0002_0000;
+const VA_SURFACE_ATTRIB_MEMORY_TYPE: c_int = 6;
+const VA_SURFACE_ATTRIB_EXTERNAL_BUFFER_DESCRIPTOR: c_int = 7;
+const VA_SURFACE_ATTRIB_SETTABLE: u32 = 0x2;
+const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2: c_int = 0x4000_0000;
+const VA_GENERIC_VALUE_TYPE_INTEGER: c_int = 1;
+const VA_GENERIC_VALUE_TYPE_POINTER: c_int = 3;
+const VA_INVALID_SURFACE: VASurfaceID = 0xffff_ffff;
+/// How many imported capture buffers are kept as VA surfaces. A capture
+/// rotates through a few (usually 2-4); more only after a resize, when the
+/// old ones are evicted as the new ones come in.
+const IMPORT_CACHE: usize = 8;
 
 /// `VARectangle`.
 #[repr(C)]
@@ -99,6 +124,66 @@ struct VaImage {
     entry_bytes: i32,
     component_order: [i8; 4],
     va_reserved: [u32; 4],
+}
+
+/// The value of a `VAGenericValue`: a C union of int, float, pointer and
+/// function pointer; only the integer and pointer members are used.
+#[repr(C)]
+#[derive(Clone, Copy)]
+union VaGenericValueUnion {
+    i: c_int,
+    p: *mut c_void,
+}
+
+/// `VAGenericValue`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct VaGenericValue {
+    kind: c_int,
+    value: VaGenericValueUnion,
+}
+
+/// `VASurfaceAttrib`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct VaSurfaceAttrib {
+    kind: c_int,
+    flags: u32,
+    value: VaGenericValue,
+}
+
+/// One object (dmabuf) of a `VADRMPRIMESurfaceDescriptor`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct VaDrmPrimeObject {
+    fd: c_int,
+    size: u32,
+    drm_format_modifier: u64,
+}
+
+/// One layer of a `VADRMPRIMESurfaceDescriptor`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct VaDrmPrimeLayer {
+    drm_format: u32,
+    num_planes: u32,
+    object_index: [u32; 4],
+    offset: [u32; 4],
+    pitch: [u32; 4],
+}
+
+/// `VADRMPRIMESurfaceDescriptor` (`<va/va_drmcommon.h>`): how a dmabuf is
+/// described to `vaCreateSurfaces` for `VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct VaDrmPrimeSurfaceDescriptor {
+    fourcc: u32,
+    width: u32,
+    height: u32,
+    num_objects: u32,
+    objects: [VaDrmPrimeObject; 4],
+    num_layers: u32,
+    layers: [VaDrmPrimeLayer; 4],
 }
 
 /// `VAProcColorProperties`.
@@ -190,6 +275,23 @@ const _: () = {
     assert!(offset_of!(VaProcPipelineParameterBuffer, processing_mode) == 148);
     assert!(offset_of!(VaProcPipelineParameterBuffer, output_hdr_metadata) == 152);
     assert!(offset_of!(VaProcPipelineParameterBuffer, va_reserved) == 160);
+    assert!(size_of::<VaGenericValue>() == 16);
+    assert!(offset_of!(VaGenericValue, value) == 8);
+    assert!(size_of::<VaSurfaceAttrib>() == 24);
+    assert!(offset_of!(VaSurfaceAttrib, flags) == 4);
+    assert!(offset_of!(VaSurfaceAttrib, value) == 8);
+    assert!(size_of::<VaDrmPrimeObject>() == 16);
+    assert!(offset_of!(VaDrmPrimeObject, size) == 4);
+    assert!(offset_of!(VaDrmPrimeObject, drm_format_modifier) == 8);
+    assert!(size_of::<VaDrmPrimeLayer>() == 56);
+    assert!(offset_of!(VaDrmPrimeLayer, object_index) == 8);
+    assert!(offset_of!(VaDrmPrimeLayer, offset) == 24);
+    assert!(offset_of!(VaDrmPrimeLayer, pitch) == 40);
+    assert!(size_of::<VaDrmPrimeSurfaceDescriptor>() == 312);
+    assert!(offset_of!(VaDrmPrimeSurfaceDescriptor, num_objects) == 12);
+    assert!(offset_of!(VaDrmPrimeSurfaceDescriptor, objects) == 16);
+    assert!(offset_of!(VaDrmPrimeSurfaceDescriptor, num_layers) == 80);
+    assert!(offset_of!(VaDrmPrimeSurfaceDescriptor, layers) == 84);
 };
 
 // glibc before 2.34 keeps dlopen in libdl; later versions ship an empty one.
@@ -248,6 +350,8 @@ libva! {
     fn vaDestroyImage(VADisplay, VAImageID) -> VAStatus;
     fn vaMapBuffer(VADisplay, VABufferID, *mut *mut c_void) -> VAStatus;
     fn vaUnmapBuffer(VADisplay, VABufferID) -> VAStatus;
+    fn vaCreateSurfaces(VADisplay, c_uint, c_uint, c_uint, *mut VASurfaceID, c_uint, *mut VaSurfaceAttrib, c_uint) -> VAStatus;
+    fn vaDestroySurfaces(VADisplay, *mut VASurfaceID, c_int) -> VAStatus;
     fn vaErrorStr(VAStatus) -> *const c_char;
 }
 
@@ -351,6 +455,10 @@ pub struct GpuConvert {
     /// Write source surfaces through `vaDeriveImage` ([`Self::upload_direct`]);
     /// cleared if the driver cannot, and FFmpeg's transfer is used instead.
     direct_upload: bool,
+    /// Captured dmabufs imported as VA surfaces, by [`Dmabuf::id`], least
+    /// recently used first. A surface aliases the buffer's memory, so it
+    /// shows whatever was captured into it last.
+    imports: VecDeque<(u64, VASurfaceID)>,
 }
 
 // SAFETY: the VA ids and FFmpeg references are only used from the thread that
@@ -434,6 +542,7 @@ impl GpuConvert {
             height,
             sources: Vec::new(),
             direct_upload: true,
+            imports: VecDeque::new(),
         };
         if let Err(e) = gpu.verify(dst_frames) {
             // A driver whose surface mapping is not what it says gets the
@@ -487,6 +596,174 @@ impl GpuConvert {
         self.run(surface_id(&src), surface_id(dst))?;
         steps.lap("vpp submit");
         Ok(src)
+    }
+
+    /// Convert a captured dmabuf into `dst`, a surface of the NV12 pool,
+    /// with no CPU copy: the buffer is imported as a VA surface (once per
+    /// buffer, then reused) and VPP reads it directly. The frame may be
+    /// larger than the encoder, whose size is rounded down to even, but not
+    /// smaller. As with [`Self::convert`] the conversion is only queued: the
+    /// caller keeps the capture from writing the buffer again (holds
+    /// [`Dmabuf::hold`]) until `dst` has been consumed.
+    pub fn convert_dmabuf(
+        &mut self,
+        dst: &ff::frame::Video,
+        frame: &Dmabuf,
+        steps: &mut Steps,
+    ) -> Result<()> {
+        if frame.width < self.width || frame.height < self.height {
+            bail!(
+                "a {}x{} capture buffer cannot fill a {}x{} frame",
+                frame.width,
+                frame.height,
+                self.width,
+                self.height
+            );
+        }
+        // Test hook, debug builds only, like OD_FAIL_HEVC_*: refuse every GPU
+        // frame to exercise the fallback to shared-memory capture.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("OD_FAIL_DMABUF_IMPORT").is_some_and(|v| v == "1") {
+            bail!("OD_FAIL_DMABUF_IMPORT=1");
+        }
+        let src = self.imported(frame)?;
+        steps.lap("import");
+        self.run(src, surface_id(dst))?;
+        steps.lap("vpp submit");
+        Ok(())
+    }
+
+    /// The VA surface of `frame`'s buffer, imported on first sight.
+    fn imported(&mut self, frame: &Dmabuf) -> Result<VASurfaceID> {
+        if let Some(i) = self.imports.iter().position(|&(id, _)| id == frame.id) {
+            let entry = self.imports.remove(i).expect("index in range");
+            self.imports.push_back(entry);
+            return Ok(entry.1);
+        }
+        let t = std::time::Instant::now();
+        let surface = self.import(frame).with_context(|| {
+            format!(
+                "importing a {}x{} {:?} capture buffer ({})",
+                frame.width,
+                frame.height,
+                frame.format,
+                modifier_name(frame.modifier)
+            )
+        })?;
+        debug!(
+            id = frame.id,
+            modifier = %modifier_name(frame.modifier),
+            us = t.elapsed().as_micros() as u64,
+            "VA-API: imported a capture buffer"
+        );
+        if self.imports.len() >= IMPORT_CACHE {
+            if let Some((_, mut old)) = self.imports.pop_front() {
+                // The kernel keeps the memory for any conversion still
+                // reading it; the surface id itself is not used again.
+                // SAFETY: a surface we created and destroy once.
+                unsafe { (self.va.vaDestroySurfaces)(self.display, &mut old, 1) };
+            }
+        }
+        self.imports.push_back((frame.id, surface));
+        Ok(surface)
+    }
+
+    /// `vaCreateSurfaces` on the buffer's dmabufs (`DRM_PRIME_2`). The VA
+    /// fourcc names the bytes as for uploads ([`source_pixel`]); the layer
+    /// format is the DRM one of the `X` variant, so the fourth byte is never
+    /// taken for alpha. iHD goes by the VA fourcc alone (the layer format is
+    /// ignored; ARGB, BGRA and XRGB read the same bytes as BGRX there), but
+    /// libva documents both and other drivers may read the layer format.
+    fn import(&self, frame: &Dmabuf) -> Result<VASurfaceID> {
+        if !crate::dmabuf::importable_modifier(frame.modifier) {
+            bail!("modifier not in the importable list (compressed or untested)");
+        }
+        let (fourcc, drm_format) = match frame.format {
+            PixelFormat::Xrgb8888 | PixelFormat::Argb8888 => {
+                (VA_FOURCC_BGRX, drm_fourcc(PixelFormat::Xrgb8888))
+            }
+            PixelFormat::Xbgr8888 | PixelFormat::Abgr8888 => {
+                (VA_FOURCC_RGBX, drm_fourcc(PixelFormat::Xbgr8888))
+            }
+        };
+        if frame.planes.is_empty() || frame.planes.len() > 4 {
+            bail!("{} planes", frame.planes.len());
+        }
+        // SAFETY: all-zero is a valid value: integers only.
+        let mut desc: VaDrmPrimeSurfaceDescriptor = unsafe { std::mem::zeroed() };
+        desc.fourcc = fourcc;
+        desc.width = frame.width;
+        desc.height = frame.height;
+        desc.num_layers = 1;
+        desc.layers[0].drm_format = drm_format;
+        desc.layers[0].num_planes = frame.planes.len() as u32;
+        let mut fds: Vec<c_int> = Vec::new();
+        for (i, plane) in frame.planes.iter().enumerate() {
+            let fd = plane.fd.as_raw_fd();
+            let index = match fds.iter().position(|&f| f == fd) {
+                Some(index) => index,
+                None => {
+                    let size = dmabuf_size(&plane.fd)
+                        .unwrap_or(u64::from(plane.stride) * u64::from(frame.height));
+                    desc.objects[fds.len()] = VaDrmPrimeObject {
+                        fd,
+                        size: u32::try_from(size).context("dmabuf larger than 4 GiB")?,
+                        drm_format_modifier: frame.modifier,
+                    };
+                    fds.push(fd);
+                    fds.len() - 1
+                }
+            };
+            desc.layers[0].object_index[i] = index as u32;
+            desc.layers[0].offset[i] = plane.offset;
+            desc.layers[0].pitch[i] = plane.stride;
+        }
+        desc.num_objects = fds.len() as u32;
+        let mut attribs = [
+            VaSurfaceAttrib {
+                kind: VA_SURFACE_ATTRIB_MEMORY_TYPE,
+                flags: VA_SURFACE_ATTRIB_SETTABLE,
+                value: VaGenericValue {
+                    kind: VA_GENERIC_VALUE_TYPE_INTEGER,
+                    value: VaGenericValueUnion {
+                        i: VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                    },
+                },
+            },
+            VaSurfaceAttrib {
+                kind: VA_SURFACE_ATTRIB_EXTERNAL_BUFFER_DESCRIPTOR,
+                flags: VA_SURFACE_ATTRIB_SETTABLE,
+                value: VaGenericValue {
+                    kind: VA_GENERIC_VALUE_TYPE_POINTER,
+                    value: VaGenericValueUnion {
+                        p: (&mut desc as *mut VaDrmPrimeSurfaceDescriptor).cast(),
+                    },
+                },
+            },
+        ];
+        let mut surface = VA_INVALID_SURFACE;
+        // SAFETY: `attribs` and the descriptor they point to outlive the call;
+        // the driver dups the descriptors it keeps, so the fds stay ours.
+        let status = unsafe {
+            (self.va.vaCreateSurfaces)(
+                self.display,
+                VA_RT_FORMAT_RGB32,
+                frame.width,
+                frame.height,
+                &mut surface,
+                1,
+                attribs.as_mut_ptr(),
+                attribs.len() as c_uint,
+            )
+        };
+        self.va.check("vaCreateSurfaces", status)?;
+        Ok(surface)
+    }
+
+    /// The imported buffers' ids and surfaces, least recently used first.
+    #[cfg(test)]
+    pub(super) fn imports(&self) -> Vec<(u64, u32)> {
+        self.imports.iter().copied().collect()
     }
 
     /// Copy `pixels` into the source surface `surface` through a CPU mapping
@@ -666,9 +943,12 @@ impl GpuConvert {
 
 impl Drop for GpuConvert {
     fn drop(&mut self) {
-        // SAFETY: each id and reference was created in `new` or
+        // SAFETY: each id and reference was created in `new`, `import` or
         // `source_pool` and is released once.
         unsafe {
+            for (_, mut s) in self.imports.drain(..) {
+                (self.va.vaDestroySurfaces)(self.display, &mut s, 1);
+            }
             (self.va.vaDestroyContext)(self.display, self.context);
             (self.va.vaDestroyConfig)(self.display, self.config);
             for (_, mut p) in self.sources.drain(..) {
@@ -677,6 +957,12 @@ impl Drop for GpuConvert {
             ff::ffi::av_buffer_unref(&mut self.device);
         }
     }
+}
+
+/// The size of a dmabuf: seeking to its end is how the kernel reports it.
+fn dmabuf_size(fd: &OwnedFd) -> Option<u64> {
+    let mut file = File::from(fd.try_clone().ok()?);
+    file.seek(SeekFrom::End(0)).ok().filter(|&n| n > 0)
 }
 
 /// Copy `pixels` into the VA surface `src` with FFmpeg's generic transfer.

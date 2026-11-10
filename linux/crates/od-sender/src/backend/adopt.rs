@@ -85,7 +85,9 @@ impl Backend for AdoptBackend {
         Caps {
             // ext-image-copy-capture cursor sessions (wayland/cursor.rs).
             cursor_metadata: true,
-            dmabuf: false,
+            // GPU buffers for the VA-API encoder over ext-image-copy-capture
+            // (wayland/capture.rs); wlr-screencopy stays in shared memory.
+            dmabuf: self.capture == CapturePath::Ext,
             resize_in_place: false,
             creates_outputs: false,
         }
