@@ -493,6 +493,7 @@ fn pick_format(codec: &ff::Codec, kind: Kind) -> Pixel {
 mod tests {
     use super::*;
     use crate::encoder::Backend;
+    use crate::encoder::vpp::{download, sample};
 
     /// Opens VA-API, or explains why the test is skipped (no GPU in CI).
     fn vaapi(w: u32, h: u32) -> Option<FfmpegEncoder> {
@@ -524,10 +525,18 @@ mod tests {
         (v, stride)
     }
 
-    #[test]
-    fn vaapi_idrs_only_on_demand_and_decode_as_bt709() {
+    /// Twelve frames with IDRs on demand only, decoded by FFmpeg's H.264
+    /// decoder, with the colour conversion on the GPU or, `gpu` false, the CPU.
+    fn idrs_only_on_demand_and_decode_as_bt709(gpu: bool) {
         let (w, h) = (320, 240);
         let Some(mut e) = vaapi(w, h) else { return };
+        if gpu && !e.gpu_convert() {
+            eprintln!("skipped: no GPU colour conversion here");
+            return;
+        }
+        if !gpu {
+            e.gpu_failed = true;
+        }
         let Some(codec) = ff::decoder::find(ff::codec::Id::H264) else {
             eprintln!("skipped: this FFmpeg has no H.264 decoder");
             return;
@@ -570,6 +579,16 @@ mod tests {
     }
 
     #[test]
+    fn vaapi_idrs_only_on_demand_and_decode_as_bt709() {
+        idrs_only_on_demand_and_decode_as_bt709(false);
+    }
+
+    #[test]
+    fn vaapi_gpu_idrs_only_on_demand_and_decode_as_bt709() {
+        idrs_only_on_demand_and_decode_as_bt709(true);
+    }
+
+    #[test]
     fn vaapi_reopens_at_a_new_size() {
         // A receiver rotation or resize reopens the encoder (session.rs).
         for (w, h) in [(320, 240), (240, 320), (1194, 834)] {
@@ -579,6 +598,202 @@ mod tests {
                 .encode(&px, stride, PixelFormat::Xrgb8888, true, Instant::now())
                 .unwrap();
             assert!(units.first().is_some_and(|u| u.unit.is_idr), "{w}x{h}");
+        }
+    }
+
+    /// Six flat colours, as (r, g, b).
+    const PATCHES: [[u8; 3]; 6] = [
+        [255, 0, 0],
+        [0, 255, 0],
+        [0, 0, 255],
+        [255, 255, 255],
+        [0, 0, 0],
+        [128, 128, 128],
+    ];
+    const BLOCK: usize = 64;
+
+    /// `PATCHES` side by side in `BLOCK` x `BLOCK` squares, in the byte
+    /// order of `format`, with a padding byte that must not matter.
+    fn patches(format: PixelFormat) -> (Vec<u8>, u32) {
+        let stride = PATCHES.len() * BLOCK * 4;
+        let mut v = vec![0u8; stride * BLOCK];
+        for row in v.chunks_exact_mut(stride) {
+            for (i, [r, g, b]) in PATCHES.iter().copied().enumerate() {
+                let px = match format {
+                    PixelFormat::Xrgb8888 | PixelFormat::Argb8888 => [b, g, r, 0x7f],
+                    PixelFormat::Xbgr8888 | PixelFormat::Abgr8888 => [r, g, b, 0x7f],
+                };
+                for p in row[i * BLOCK * 4..(i + 1) * BLOCK * 4].chunks_exact_mut(4) {
+                    p.copy_from_slice(&px);
+                }
+            }
+        }
+        (v, stride as u32)
+    }
+
+    /// The VA-API device and a GPU converter on it, or why the test skips.
+    fn gpu(w: u32, h: u32) -> Option<(HwFrames, GpuConvert)> {
+        let hw = match HwFrames::new(w, h) {
+            Ok(hw) => hw,
+            Err(e) => {
+                eprintln!("skipped: VA-API unavailable here ({e:#})");
+                return None;
+            }
+        };
+        match GpuConvert::new(hw.device, hw.frames) {
+            Ok(g) => Some((hw, g)),
+            Err(e) => {
+                let why = format!("{e:#}");
+                // A driver that converts, but wrongly, is a failure.
+                assert!(!why.contains("BT.709"), "{why}");
+                eprintln!("skipped: no GPU colour conversion here ({why})");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn vaapi_gpu_convert_is_bt709_limited() {
+        let (w, h) = (PATCHES.len() * BLOCK, BLOCK);
+        let Some((hw, mut gpu)) = gpu(w as u32, h as u32) else {
+            return;
+        };
+        for format in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888] {
+            let (px, stride) = patches(format);
+            let dst = hw_surface(hw.frames).unwrap();
+            gpu.convert(&dst, &px, stride, format).unwrap();
+            let got = download(&dst).unwrap();
+            // swscale is the reference the receiver's colours are defined by.
+            let mut want = new_video(Pixel::NV12, w as u32, h as u32);
+            Converter::new(w as u32, h as u32, Pixel::NV12, 1)
+                .unwrap()
+                .convert(&px, stride, format, &mut want)
+                .unwrap();
+            for (i, rgb) in PATCHES.iter().enumerate() {
+                let at = (i * BLOCK + BLOCK / 2, BLOCK / 2);
+                let (g, wnt) = (sample(&got, at.0, at.1), sample(&want, at.0, at.1));
+                assert!(
+                    g.iter().zip(wnt).all(|(g, w)| g.abs_diff(w) <= 1),
+                    "{format:?} {rgb:?}: GPU {g:?}, swscale {wnt:?}"
+                );
+            }
+            // Known values for red and white, so the reference itself is checked.
+            let red = sample(&got, BLOCK / 2, BLOCK / 2);
+            assert!(
+                red.iter()
+                    .zip([63, 102, 240])
+                    .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 1)
+            );
+            let white = sample(&got, 3 * BLOCK + BLOCK / 2, BLOCK / 2);
+            assert!(
+                white
+                    .iter()
+                    .zip([235, 128, 128])
+                    .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 1)
+            );
+        }
+    }
+
+    #[test]
+    fn vaapi_gpu_encodes_the_right_colours() {
+        let (w, h) = ((PATCHES.len() * BLOCK) as u32, BLOCK as u32);
+        let Some(mut e) = vaapi(w, h) else { return };
+        if !e.gpu_convert() {
+            eprintln!("skipped: no GPU colour conversion here");
+            return;
+        }
+        let Some(codec) = ff::decoder::find(ff::codec::Id::H264) else {
+            eprintln!("skipped: this FFmpeg has no H.264 decoder");
+            return;
+        };
+        for format in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888] {
+            let mut dec = ff::codec::context::Context::new_with_codec(codec)
+                .decoder()
+                .video()
+                .unwrap();
+            let (px, stride) = patches(format);
+            let mut last = None;
+            for i in 0..3 {
+                for u in e
+                    .encode(&px, stride, format, i == 0, Instant::now())
+                    .unwrap()
+                {
+                    dec.send_packet(&ff::Packet::copy(&u.unit.annexb)).unwrap();
+                    let mut out = ff::frame::Video::empty();
+                    while dec.receive_frame(&mut out).is_ok() {
+                        last = Some(std::mem::replace(&mut out, ff::frame::Video::empty()));
+                    }
+                }
+            }
+            let out = last.expect("a decoded frame");
+            for (i, want) in [
+                [63, 102, 240],
+                [173, 42, 26],
+                [32, 240, 118],
+                [235, 128, 128],
+                [16, 128, 128],
+                [126, 128, 128],
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let (x, y) = (i * BLOCK + BLOCK / 2, BLOCK / 2);
+                let got = [
+                    out.data(0)[y * out.stride(0) + x],
+                    out.data(1)[(y / 2) * out.stride(1) + x / 2],
+                    out.data(2)[(y / 2) * out.stride(2) + x / 2],
+                ];
+                // Lossy, but flat patches stay within a few levels.
+                assert!(
+                    got.iter()
+                        .zip(want)
+                        .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 4),
+                    "{format:?} patch {i}: decoded {got:?}, expected {want:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vaapi_gpu_convert_handles_any_size() {
+        // The last is what a 1001x777 capture is cropped to (even sizes);
+        // the capture buffer keeps its own, larger, stride.
+        for (w, h, cw, ch) in [
+            (2388, 1668, 2388, 1668),
+            (1194, 834, 1194, 834),
+            (1000, 776, 1001, 777),
+        ] {
+            let Some(mut e) = vaapi(w, h) else { return };
+            if !e.gpu_convert() {
+                eprintln!("skipped: no GPU colour conversion here");
+                return;
+            }
+            let stride = cw * 4;
+            let px = vec![0x40u8; (stride * ch) as usize];
+            let mut times = Vec::new();
+            for i in 0..12 {
+                let t = Instant::now();
+                let units = e
+                    .encode(&px, stride, PixelFormat::Xrgb8888, i == 0, Instant::now())
+                    .unwrap();
+                times.push(t.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(units.len(), 1, "{w}x{h} frame {i}");
+                assert_eq!(units[0].unit.is_idr, i == 0, "{w}x{h} frame {i}");
+            }
+            times.sort_by(f64::total_cmp);
+            eprintln!("{w}x{h}: encode call p50 {:.2} ms", times[times.len() / 2]);
+
+            // The conversion alone: upload, VPP and wait (informational).
+            let Some((hw, mut g)) = gpu(w, h) else { return };
+            let dst = hw_surface(hw.frames).unwrap();
+            let mut conv = Vec::new();
+            for _ in 0..30 {
+                let t = Instant::now();
+                g.convert(&dst, &px, stride, PixelFormat::Xrgb8888).unwrap();
+                conv.push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            conv.sort_by(f64::total_cmp);
+            eprintln!("{w}x{h}: GPU convert p50 {:.2} ms", conv[conv.len() / 2]);
         }
     }
 }
