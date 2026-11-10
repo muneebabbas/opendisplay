@@ -5,10 +5,12 @@
 //! coefficients, which the stream's VUI announces so the receiver converts
 //! back the same way ([`Converter`], in parallel bands).
 //!
-//! VA-API takes GPU surfaces, not system memory: the converted NV12 frame
-//! is uploaded into a surface from the encoder's own pool ([`HwFrames`])
-//! before it is sent. That upload is the one copy a dmabuf capture path
-//! would remove later; everything around it stays the same.
+//! VA-API takes GPU surfaces, not system memory. Where the driver has a
+//! video-processing pipeline the capture pixels are copied into a surface
+//! and converted to NV12 by the GPU straight into a surface of the encoder's
+//! own pool ([`HwFrames`], [`GpuConvert`]): the one copy a dmabuf capture
+//! path would remove later. Otherwise swscale converts as above and the NV12
+//! frame is uploaded into such a surface before it is sent.
 
 use std::collections::VecDeque;
 use std::sync::Once;
@@ -19,10 +21,11 @@ use ff::format::Pixel;
 use ff::util::color;
 use ffmpeg_next as ff;
 use opendisplay_proto::video::{AccessUnit, NalType, access_units, nal_units};
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::convert::{Converter, band_count};
-use super::stage::{YuvFrame, new_video};
+use super::stage::{YuvFrame, new_video, tag_bt709};
+use super::vpp::{GpuConvert, hw_surface, new_pool};
 use super::{Encoded, EncoderSettings};
 use crate::backend::PixelFormat;
 
@@ -68,23 +71,8 @@ impl HwFrames {
             if err < 0 {
                 bail!("no VA-API device: {}", ff::Error::from(err));
             }
-            hw.frames = av_hwframe_ctx_alloc(hw.device);
-            if hw.frames.is_null() {
-                bail!("av_hwframe_ctx_alloc failed");
-            }
-            let fc = (*hw.frames).data as *mut AVHWFramesContext;
-            (*fc).format = AVPixelFormat::AV_PIX_FMT_VAAPI;
-            (*fc).sw_format = AVPixelFormat::AV_PIX_FMT_NV12;
-            (*fc).width = width as i32;
-            (*fc).height = height as i32;
-            // 0: the pool grows on demand, so a slow encoder holding
-            // surfaces never starves the upload.
-            (*fc).initial_pool_size = 0;
-            let err = av_hwframe_ctx_init(hw.frames);
-            if err < 0 {
-                bail!("VA-API surface pool: {}", ff::Error::from(err));
-            }
         }
+        hw.frames = new_pool(hw.device, AVPixelFormat::AV_PIX_FMT_NV12, width, height)?;
         Ok(hw)
     }
 
@@ -92,13 +80,9 @@ impl HwFrames {
     /// and picture type over.
     fn upload(&self, sw: &ff::frame::Video) -> Result<ff::frame::Video> {
         use ff::ffi::*;
-        let mut hw = ff::frame::Video::empty();
-        // SAFETY: `hw` is an empty frame we own; the pool and `sw` are valid.
+        let mut hw = hw_surface(self.frames)?;
+        // SAFETY: `hw` is a surface we own; `sw` is valid.
         unsafe {
-            let err = av_hwframe_get_buffer(self.frames, hw.as_mut_ptr(), 0);
-            if err < 0 {
-                bail!("VA-API surface: {}", ff::Error::from(err));
-            }
             let err = av_hwframe_transfer_data(hw.as_mut_ptr(), sw.as_ptr(), 0);
             if err < 0 {
                 bail!("VA-API upload: {}", ff::Error::from(err));
@@ -136,6 +120,13 @@ pub struct FfmpegEncoder {
     /// VA-API only: where converted frames are uploaded before encoding.
     /// Declared after `enc` so the codec drops its references first.
     hw: Option<HwFrames>,
+    /// VA-API only: converts the capture's RGB to NV12 on the GPU, when the
+    /// driver can. `None` means swscale does it, on the CPU.
+    gpu: Option<GpuConvert>,
+    /// The GPU conversion failed once and is not used again. Its context is
+    /// kept until the encoder closes: with iHD, destroying a VPP context
+    /// makes later CPU uploads to the same device fail (EIO).
+    gpu_failed: bool,
 }
 
 static INIT: Once = Once::new();
@@ -256,6 +247,8 @@ impl FfmpegEncoder {
 
         let yuv = new_video(format, width, height);
 
+        let gpu = hw.as_ref().and_then(gpu_convert);
+
         Ok(Self {
             enc,
             convert,
@@ -264,12 +257,20 @@ impl FfmpegEncoder {
             in_flight: VecDeque::new(),
             param_sets: Vec::new(),
             hw,
+            gpu,
+            gpu_failed: false,
         })
     }
 
     /// The 4:2:0 format the encoder was opened with.
     pub fn format(&self) -> Pixel {
         self.yuv.format()
+    }
+
+    /// Whether the GPU converts colours: the encoder then takes the capture's
+    /// RGB frames itself ([`Self::encode`]) and none are pre-converted.
+    pub fn gpu_convert(&self) -> bool {
+        self.gpu.is_some() && !self.gpu_failed
     }
 
     pub fn encode(
@@ -281,6 +282,19 @@ impl FfmpegEncoder {
         captured_at: Instant,
     ) -> Result<Vec<Encoded>> {
         let t0 = Instant::now();
+        if let (Some(gpu), false) = (&mut self.gpu, self.gpu_failed) {
+            match Self::convert_on_gpu(gpu, self.hw.as_ref(), pixels, stride, format) {
+                Ok(mut surface) => return self.send(&mut surface, force_idr, captured_at, t0),
+                Err(e) => {
+                    // A driver that failed once will fail again: keep
+                    // streaming on the CPU path instead.
+                    warn!(
+                        "VA-API colour conversion failed, converting on the CPU from now on: {e:#}"
+                    );
+                    self.gpu_failed = true;
+                }
+            }
+        }
         self.convert
             .convert(pixels, stride, format, &mut self.yuv)?;
         let mut yuv = std::mem::replace(&mut self.yuv, ff::frame::Video::empty());
@@ -322,7 +336,40 @@ impl FfmpegEncoder {
         self.submit(&mut f, force_idr, captured_at, t0)
     }
 
+    /// RGB pixels to a fresh NV12 surface of the encoder's pool, on the GPU.
+    fn convert_on_gpu(
+        gpu: &mut GpuConvert,
+        hw: Option<&HwFrames>,
+        pixels: &[u8],
+        stride: u32,
+        format: PixelFormat,
+    ) -> Result<ff::frame::Video> {
+        let hw = hw.ok_or_else(|| anyhow!("no VA-API surfaces"))?;
+        let mut surface = hw_surface(hw.frames)?;
+        gpu.convert(&surface, pixels, stride, format)?;
+        tag_bt709(&mut surface);
+        Ok(surface)
+    }
+
     fn submit(
+        &mut self,
+        frame: &mut ff::frame::Video,
+        force_idr: bool,
+        captured_at: Instant,
+        t0: Instant,
+    ) -> Result<Vec<Encoded>> {
+        match &self.hw {
+            Some(hw) => {
+                let mut surface = hw.upload(frame)?;
+                self.send(&mut surface, force_idr, captured_at, t0)
+            }
+            None => self.send(frame, force_idr, captured_at, t0),
+        }
+    }
+
+    /// Encode a frame the encoder can take as it is: system memory, or a
+    /// VA-API surface.
+    fn send(
         &mut self,
         frame: &mut ff::frame::Video,
         force_idr: bool,
@@ -335,14 +382,7 @@ impl FfmpegEncoder {
         } else {
             ff::picture::Type::None
         });
-        match &self.hw {
-            Some(hw) => {
-                let surface = hw.upload(frame)?;
-                self.enc.send_frame(&surface)
-            }
-            None => self.enc.send_frame(frame),
-        }
-        .context("send_frame")?;
+        self.enc.send_frame(frame).context("send_frame")?;
         self.in_flight.push_back((self.pts, captured_at, t0));
         // 1/60 s apart in the time base; the encoder only needs monotonic pts.
         self.pts += 16_667;
@@ -407,6 +447,23 @@ impl FfmpegEncoder {
             }
         }
         Some(unit)
+    }
+}
+
+/// Set up GPU colour conversion for a VA-API encoder, or say why not and
+/// leave it to swscale.
+fn gpu_convert(hw: &HwFrames) -> Option<GpuConvert> {
+    // Development knob for A/B benchmarks: force the CPU path.
+    if std::env::var_os("OD_VAAPI_CPU_CONVERT").is_some_and(|v| v == "1") {
+        info!("VA-API: colour conversion on the CPU (OD_VAAPI_CPU_CONVERT=1)");
+        return None;
+    }
+    match GpuConvert::new(hw.device, hw.frames) {
+        Ok(g) => Some(g),
+        Err(e) => {
+            warn!("VA-API: GPU colour conversion unavailable, converting on the CPU: {e:#}");
+            None
+        }
     }
 }
 
