@@ -292,6 +292,7 @@ fn encode_bench(
         height,
         encoder::EncoderSettings {
             backend,
+            codec: opendisplay_proto::video::Codec::H264,
             bitrate_bps: (bitrate_mbps * 1e6) as u32,
             max_fps: 60.0,
             threads,
@@ -390,6 +391,7 @@ fn pipeline_bench(
     // frame kept for an IDR replay.
     let settings = encoder::EncoderSettings {
         backend,
+        codec: opendisplay_proto::video::Codec::H264,
         bitrate_bps: 20_000_000,
         max_fps: fps as f32,
         threads: threads_or_all(threads),
@@ -805,6 +807,7 @@ fn smoke(
                             h,
                             encoder::EncoderSettings {
                                 backend: encoder::Backend::Auto,
+                                codec: opendisplay_proto::video::Codec::H264,
                                 bitrate_bps: 8_000_000,
                                 max_fps: 60.0,
                                 threads: threads_or_all(0),

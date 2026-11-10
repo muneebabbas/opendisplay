@@ -1,5 +1,5 @@
-//! H.264 encoding behind one [`Encoder`] shape, with the backend picked at
-//! run time (#360). `auto` tries, in order:
+//! H.264 (and, on VA-API, HEVC) encoding behind one [`Encoder`] shape, with
+//! the backend picked at run time (#360). `auto` tries, in order:
 //!
 //! 1. `v4l2m2m` — any V4L2 stateful mem2mem encoder through FFmpeg
 //!    (`h264_v4l2m2m`): Raspberry Pi, Rockchip, and Asahi's AVE once a
@@ -17,6 +17,11 @@
 //! colours right, swscale converts on the CPU as for the other encoders. At
 //! the GPU's power-saving clocks it can still add latency compared with
 //! x264, so it does not join `auto` yet.
+//!
+//! VA-API also encodes HEVC (`hevc_vaapi`, Main profile, the same low-latency
+//! settings), the only backend that does. The session picks the codec when
+//! the receiver offers HEVC ([`can_encode_hevc`] says whether the GPU opens
+//! it); an [`Encoder`] never falls back to another codec by itself.
 
 mod convert;
 mod ffmpeg;
@@ -28,12 +33,14 @@ mod vpp;
 
 pub use stage::{ConvertStage, MIN_STAGE_WIDTH, YuvFrame};
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
 use clap::ValueEnum;
 use ffmpeg_next as ff;
-use opendisplay_proto::video::AccessUnit;
+use opendisplay_proto::video::{AccessUnit, Codec};
 use tracing::{debug, info};
 
 use crate::backend::{Frame, FrameBuf};
@@ -67,9 +74,63 @@ impl Backend {
     }
 }
 
+fn codec_name(codec: Codec) -> &'static str {
+    match codec {
+        Codec::H264 => "H.264",
+        Codec::Hevc => "HEVC",
+    }
+}
+
+/// Whether a VA-API HEVC encoder opens at this size. Opens a throwaway one
+/// through the same constructor the stream uses, once per size per process;
+/// logs once per size when it does not.
+pub fn can_encode_hevc(width: u32, height: u32) -> bool {
+    let (width, height) = (width & !1, height & !1);
+    #[cfg(debug_assertions)]
+    if std::env::var_os("OD_FAIL_HEVC_ENCODER").is_some_and(|v| v == "1") {
+        info!("HEVC encoder unavailable at {width}x{height} (OD_FAIL_HEVC_ENCODER=1); using H.264");
+        return false;
+    }
+    static CACHE: OnceLock<Mutex<HashMap<(u32, u32), bool>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(&ok) = cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(width, height))
+    {
+        return ok;
+    }
+    // Not held while opening: that takes a while and other sizes may probe.
+    let probe = Encoder::new(
+        width,
+        height,
+        EncoderSettings {
+            backend: Backend::Vaapi,
+            codec: Codec::Hevc,
+            bitrate_bps: 2_000_000,
+            max_fps: 60.0,
+            threads: 1,
+        },
+    );
+    let ok = match probe {
+        Ok(_) => true,
+        Err(e) => {
+            info!("HEVC encoder unavailable at {width}x{height} ({e:#}); using H.264");
+            false
+        }
+    };
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((width, height), ok);
+    ok
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct EncoderSettings {
     pub backend: Backend,
+    /// HEVC needs [`Backend::Vaapi`]; any other backend refuses it.
+    pub codec: Codec,
     pub bitrate_bps: u32,
     pub max_fps: f32,
     /// 0 = let the backend decide.
@@ -91,6 +152,7 @@ enum Imp {
 pub struct Encoder {
     imp: Imp,
     backend: Backend,
+    codec: Codec,
     width: u32,
     height: u32,
 }
@@ -101,6 +163,12 @@ impl Encoder {
     /// row/column.
     pub fn new(width: u32, height: u32, s: EncoderSettings) -> Result<Self> {
         let (width, height) = (width & !1, height & !1);
+        if s.codec == Codec::Hevc && s.backend != Backend::Vaapi {
+            bail!(
+                "HEVC is only encoded by the VA-API backend, not {}",
+                s.backend.label()
+            );
+        }
         let order: &[Backend] = match s.backend {
             Backend::Auto => &[Backend::V4l2m2m, Backend::X264, Backend::Openh264],
             Backend::V4l2m2m => &[Backend::V4l2m2m],
@@ -138,6 +206,7 @@ impl Encoder {
                     return Ok(Self {
                         imp,
                         backend: b,
+                        codec: s.codec,
                         width,
                         height,
                     });
@@ -148,7 +217,11 @@ impl Encoder {
                 }
             }
         }
-        bail!("no H.264 encoder could be opened: {}", errors.join("; "))
+        bail!(
+            "no {} encoder could be opened: {}",
+            codec_name(s.codec),
+            errors.join("; ")
+        )
     }
 
     /// The backend that actually opened; pass it back in [`EncoderSettings`]
@@ -157,12 +230,24 @@ impl Encoder {
         self.backend
     }
 
+    pub fn codec(&self) -> Codec {
+        self.codec
+    }
+
     pub fn label(&self) -> &'static str {
-        match (&self.imp, self.backend) {
-            (Imp::Ffmpeg(e), Backend::Vaapi) if e.gpu_convert() => {
+        match (&self.imp, self.backend, self.codec) {
+            (Imp::Ffmpeg(e), Backend::Vaapi, Codec::H264) if e.gpu_convert() => {
                 "VA-API (hardware), GPU colour conversion"
             }
-            (Imp::Ffmpeg(_), Backend::Vaapi) => "VA-API (hardware), CPU colour conversion",
+            (Imp::Ffmpeg(_), Backend::Vaapi, Codec::H264) => {
+                "VA-API (hardware), CPU colour conversion"
+            }
+            (Imp::Ffmpeg(e), Backend::Vaapi, Codec::Hevc) if e.gpu_convert() => {
+                "VA-API (hardware) HEVC, GPU colour conversion"
+            }
+            (Imp::Ffmpeg(_), Backend::Vaapi, Codec::Hevc) => {
+                "VA-API (hardware) HEVC, CPU colour conversion"
+            }
             _ => self.backend.label(),
         }
     }
@@ -222,6 +307,34 @@ impl Encoder {
             (FrameBuf::Yuv(y), Imp::Ffmpeg(e)) => e.encode_yuv(y, force_idr, frame.captured_at),
             (FrameBuf::Yuv(_), _) => bail!("{} takes RGB frames only", self.label()),
             (FrameBuf::Dmabuf { .. }, _) => bail!("{} cannot encode dmabuf frames", self.label()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hevc_needs_the_vaapi_backend() {
+        for backend in [
+            Backend::Auto,
+            Backend::V4l2m2m,
+            Backend::X264,
+            Backend::Openh264,
+        ] {
+            let s = EncoderSettings {
+                backend,
+                codec: Codec::Hevc,
+                bitrate_bps: 2_000_000,
+                max_fps: 60.0,
+                threads: 1,
+            };
+            let e = Encoder::new(320, 240, s).err().expect("must refuse HEVC");
+            assert!(
+                format!("{e:#}").contains("HEVC is only encoded by the VA-API backend"),
+                "{backend:?}: {e:#}"
+            );
         }
     }
 }

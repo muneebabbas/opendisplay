@@ -267,6 +267,7 @@ mod tests {
             h,
             EncoderSettings {
                 backend: Backend::X264,
+                codec: opendisplay_proto::video::Codec::H264,
                 bitrate_bps: 20_000_000,
                 max_fps: 60.0,
                 // Sliced threads make x264's output differ run to run.
