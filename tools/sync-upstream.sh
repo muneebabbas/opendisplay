@@ -11,7 +11,7 @@
 set -euo pipefail
 
 STACKS=(
-  linux/hevc
+  linux/dmabuf-capture
 )
 
 push=0

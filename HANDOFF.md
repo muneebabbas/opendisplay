@@ -1,10 +1,10 @@
 # Handoff: where to pick up
 
-Last updated 2026-11-10. Update this file at the end of every session.
+Last updated 2026-11-10 (end of M4). Update this file at the end of every session.
 
 ## State
 
-* **Code:** three stacked topic branches on upstream v1.30.2 (`0f44853`, still
+* **Code:** four stacked topic branches on upstream v1.30.2 (`0f44853`, still
   upstream's latest on 2026-11-10):
   * `linux/vaapi-encoder` (M0): opt-in VA-API H.264 encoder, 3 commits.
     Draft PR https://github.com/muneebabbas/opendisplay/pull/1
@@ -12,16 +12,30 @@ Last updated 2026-11-10. Update this file at the end of every session.
     through libva VPP. Draft PR #2.
   * `linux/hevc` (M3), on top: 3 commits. HEVC over VA-API when the receiver
     offers it. Draft PR https://github.com/muneebabbas/opendisplay/pull/3
-  Nothing has been sent upstream.
-* **M1, M2 and M3 are done.** `--encoder=vaapi` streams 2388x1668 at 60 fps
-  at 0.15 (scroll) / 0.33 (video) cores, latency at or below x264, exact
-  BT.709, and now **HEVC** to the iPad (PHONE-STATS `"codec":"HEVC"`).
-  HEVC costs the same as H.264 live; it wins on quality per bit: BD-rate
-  PSNR-Y -31% on code scrolling, -17% on video (PLAN M3,
-  `research/vaapi-encode.md` "M3: HEVC").
-* VA-API (and so HEVC) is still opt-in (`--encoder=vaapi`); `auto` unchanged.
-* **Not yet checked by eye:** the HEVC picture on the iPad (stats and decode
-  are clean; the colour test passes for HEVC). Look at it once.
+  * `linux/dmabuf-capture` (M4), on top: 2 commits. Zero-copy capture into
+    dmabufs imported as VA surfaces. Draft PR
+    https://github.com/muneebabbas/opendisplay/pull/4
+  Nothing has been sent upstream. CI does not run on these stacked fork PRs;
+  the upstream checks were run locally before each commit.
+* **M1-M4 are done.** `--encoder=vaapi` on Hyprland 0.57 now captures into
+  GPU buffers (XR24 I915_4_TILED): 2388x1668 HEVC at 60 fps for **0.08
+  cores scrolling, 0.23 on video** (M3: 0.155 / 0.35), encode p50 2-3 ms
+  shorter, e2e at or below M3, exact BT.709 (tests through dmabufs), cursor
+  painted into the GPU frames (checked pixel by pixel), fallback to shm
+  verified. Details: PLAN M4, `research/vaapi-encode.md` "M4: zero-copy
+  capture", `results/2026-11-10-wifi-m4/`.
+* **Per-frame CPU vs the M4 goal (0.5-1 ms):** the pixel path (capture ->
+  import -> VPP submit) is ~1 ms; the whole process is 1.3 ms/frame
+  scrolling and 3.9 ms/frame on video, the rest being iHD's encode submit,
+  interrupts, the bitstream copy and od's NAL parsing (perf in the research
+  notes). Not something capture can remove.
+* **120 fps groundwork (M5):** against `od-receiver --refresh 120` dmabuf
+  capture sends 115 fps H.264 with encode p50 7.1 / p95 8.1 ms and the media
+  GT at 1200 MHz; shm capture stalls at ~50 fps (media GT never clocks up).
+  HEVC at 120 untested; the iPad app caps at 60.
+* VA-API (and so HEVC and GPU capture) is still opt-in (`--encoder=vaapi`).
+* **Not yet checked by eye:** the stream on the iPad itself since M3 (stats,
+  decode and colour tests are clean). Look at it once.
 * **Pending decision (owner):** the branch/release model proposed on
   2026-11-10 (`main` mirror, a `release` integration branch taking fork PRs as
   merges, tags there, upstream merged in, topic branches rebased for
@@ -29,15 +43,17 @@ Last updated 2026-11-10. Update this file at the end of every session.
 
 ## Next step
 
-Options, in PLAN order (agree with the owner first):
+Options (agree with the owner first):
 
-1. **M4 zero-copy capture** (`linux/dmabuf-capture`, on `linux/hevc`):
-   dmabuf capture imported as VA surfaces; removes the ~2.5 ms upload and is
-   what makes 120 fps realistic.
-2. Small M2/M3 follow-ups: VA-API in `auto` (then HEVC is automatic for
-   everyone with a VA-API GPU); overlap upload with encode; why the live
-   `foot`/`seq` scroll is so much cheaper than the synthetic flood; AMD.
-3. HEVC 4:4:4 only after an iPad app change (PLAN M3).
+1. **M5 120 fps:** needs an iPad app change (`maxFrameRate: 60`), or test
+   HEVC at 120 with a receiver that offers it; encode p95 sits right at the
+   8.3 ms budget for H.264.
+2. **VA-API in `auto`** (then HEVC and zero-copy are automatic for everyone
+   with a VA-API GPU).
+3. Remaining CPU: od's NAL processing (~0.3 ms/frame, `normalize_start_codes`
+   copies), the VPP submit on imported surfaces (0.6-1.0 vs 0.5 ms on shm).
+4. Dmabufs over wlr-screencopy (Hyprland < 0.57) and PipeWire (KDE/GNOME);
+   AMD (LINEAR only, untested).
 
 ## Resume on any machine
 
@@ -91,8 +107,15 @@ Keep up with upstream: `~/projects/opendisplay-fork/tools/sync-upstream.sh`
 * **Rate-distortion:** `python3 -I tools/rd_bench.py --work ~/odrd-work --out
   results/<dir>` (~20 min; libvmaf; `--dry-run` prints the ffmpeg commands).
 * **Where a frame's time goes:** `RUST_LOG=debug` logs per-step averages
-  (upload, vpp, send_frame, receive) every 2 s. `OD_VAAPI_CPU_CONVERT=1`
-  forces the old swscale path for A/B.
+  (import or upload, vpp submit, send_frame, receive) every 2 s.
+  `OD_VAAPI_CPU_CONVERT=1` forces the old swscale path,
+  `OD_VAAPI_SHM_CAPTURE=1` shared-memory capture (the M3 path), for A/B.
+  Debug builds: `OD_FAIL_DMABUF_IMPORT=1` tests the fallback to shm.
+* **GPU capture without the encoder:** `od-sender dev capture-test --output
+  eDP-1 --gpu [--cursor] [--gpu-linear --save x.ppm]` (linear buffers can be
+  saved; the normal 4-tiled ones cannot be read by the CPU).
+* **M3 vs M4 in one run:** the harness takes `<variant>@<binary>`
+  (e.g. `vaapi-hevc@/tmp/od-sender-m3`) and `vaapi-hevc-shm`.
 * **Profiling:** build with symbols without editing files:
   `CARGO_TARGET_DIR=/tmp/od-sym CARGO_PROFILE_RELEASE_STRIP=none cargo build
   --release -p od-sender`, then `perf record -g -p <pid>`.
@@ -128,6 +151,14 @@ Keep up with upstream: `~/projects/opendisplay-fork/tools/sync-upstream.sh`
   power difference.
 * **`hevc_vaapi` on iHD rejects tiny sizes** (384x64: EINVAL); probe at the
   real stream size.
+* **iHD + compressed modifiers:** `I915_4_TILED_LNL_CCS` (gbm's default
+  pick on Lunar Lake) imports and converts without an error into a black
+  picture. Keep the modifier allowlist (`dmabuf::importable_modifier`).
+* **Moving the pointer on Hyprland 0.57:** `hyprctl dispatch
+  'hl.dsp.cursor.move({ x = 600, y = 400 })'` (`movecursor X Y` errors).
+* **Agent worktree isolation** in this T3 project is tied to the
+  `omarchy-opendisplay` repo: for parallel agents make worktrees of
+  `~/projects/opendisplay` by hand (`git worktree add ../od-wt-x <commit>`).
 * **Tools installed for this work:** `perf intel-gpu-tools gst-plugin-va
   gst-libav nasm`. `kernel.perf_event_paranoid` was set to 0 for profiling;
   it resets to 2 on reboot (or `sudo sysctl kernel.perf_event_paranoid=2`).

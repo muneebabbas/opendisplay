@@ -1,0 +1,25 @@
+[2m2026-11-10T15:30:55.842918Z[0m [33m WARN[0m Hyprland 0.57.0 is newer than the tested 0.56.x; report problems with `od-sender doctor` output
+[2m2026-11-10T15:30:55.843038Z[0m [32m INFO[0m capture: ext-image-copy-capture (the standard capture protocol)
+[2m2026-11-10T15:30:55.844622Z[0m [32m INFO[0m backend hyprland: Hyprland 0.57.0 (IPC /run/user/1000/hypr/0aa6745f705f2c4b0a5004eb019ef76e5bbdb426_1793628615_593082903/.socket.sock) (creates outputs yes, resize in place yes, cursor metadata no, dmabuf no)
+[2m2026-11-10T15:30:55.948568Z[0m [32m INFO[0m connected to receiver 10.93.10.226:9000
+[2m2026-11-10T15:30:55.954667Z[0m [32m INFO[0m hello: 2388x1668 @120 scale 2 device Some("iPad") id Some("A0EC2343-F05E-4776-8903-8C62BB114896") pv 3
+[2m2026-11-10T15:30:56.228752Z[0m [32m INFO[0m plan: panel 2388x1668 @2 -> output 2388x1668 @120Hz scale 2 (1194x834 logical) -> hevc 2388x1668 @60
+[2m2026-11-10T15:30:56.252407Z[0m [32m INFO[0m virtual display od-a0ec23 = 2388x1668 @120 scale 2 at 1440,0 (1194x834 logical)
+[2m2026-11-10T15:30:56.254680Z[0m [32m INFO[0m capturing output od-a0ec23
+[2m2026-11-10T15:30:56.255017Z[0m [32m INFO[0m session: 2388x1668 shm formats [Argb8888, Xrgb8888]
+[2m2026-11-10T15:30:56.320796Z[0m [32m INFO[0m capture: GPU buffers XR24 I915_4_TILED on /dev/dri/renderD128
+[2m2026-11-10T15:30:56.362639Z[0m [32m INFO[0m workspace 9 on od-a0ec23
+[2m2026-11-10T15:30:56.362687Z[0m [32m INFO[0m Extending onto iPad (A0EC2343-F05E-4776-8903-8C62BB114896): 1194x834 logical at 2x (od-a0ec23, right of your other displays). Ctrl+C to stop.
+[2m2026-11-10T15:30:56.511113Z[0m [32m INFO[0m encoder: VA-API (hardware) HEVC, GPU colour conversion 2388x1668 35.0 Mbit/s, 8 threads
+[2m2026-11-10T15:31:00.243587Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"HEVC","cur":0,"curLost":0,"dec50":0,"e2e50":26,"e2e95":40,"enc50":19,"fps":11,"hitch":11,"inp50":0,"int50":17,"int95":43,"mbps":0.1,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":12,"stalls":2,"transport":"WiFi"}
+[2m2026-11-10T15:31:00.949930Z[0m [32m INFO[0m sent 8.8 fps 0.1 Mbit/s | encode p50 9.7 ms p95 26.8 ms | capture->send p50 15.0 ms p95 35.8 ms | SenderCounters { video_frames: 44, video_bytes: 41138, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:31:05.950196Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 44, video_bytes: 41138, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:31:10.950203Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 44, video_bytes: 41138, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:31:15.950169Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 44, video_bytes: 41138, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:31:20.950560Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 44, video_bytes: 41138, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:31:25.950087Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 44, video_bytes: 41138, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:31:30.950647Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 44, video_bytes: 41138, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:31:34.258491Z[0m [32m INFO[0m SIGINT: shutting down
+[2m2026-11-10T15:31:34.482980Z[0m [32m INFO[0m 97 frames in 38.2s: first after 75 ms; interval p50 8.8 ms, p95 34.7 ms, min 2.2 ms
+[2m2026-11-10T15:31:34.491041Z[0m [32m INFO[0m removed virtual display od-a0ec23
+[2m2026-11-10T15:31:34.532640Z[0m [32m INFO[0m connection ended

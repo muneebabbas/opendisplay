@@ -278,24 +278,15 @@ closes (not investigated).
   That belongs in a separate PR, once VA-API is worth enabling by default.
 * **Flatpak** only packages the receiver today.
 
-## Stage B (not started): capture into GPU buffers
+## Stage B: capture into GPU buffers (done in M4, see "M4: zero-copy capture")
 
-What removes the remaining CPU work (the BGRA upload as well):
-
-1. Capture: allocate dmabufs (gbm, or `zwp_linux_dmabuf_v1` feedback) for
-   `ext-image-copy-capture` using the session's `dmabuf_device` and
-   `dmabuf_format` events (today `wayland/capture.rs` ignores them), and
-   produce `FrameBuf::Dmabuf` (the variant exists, unused);
-   `backend::Caps::dmabuf` already exists to report support.
-2. Import: wrap the dmabuf as an `AV_PIX_FMT_DRM_PRIME` frame and map it to a
-   VA surface (`av_hwframe_map`), as wl-screenrec does.
-3. Convert on the GPU (stage A2, same colour question).
-4. Fallback: any failure drops back to shm and stage A.
-
-Open questions: modifiers and tiling Hyprland hands out versus what the
-encoder imports; the cursor, painted into the video on Hyprland today, has to
-come with the dmabuf too; how this fits the PipeWire path (KDE and GNOME give
-dmabufs too).
+The plan was: allocate dmabufs for `ext-image-copy-capture` from the
+session's `dmabuf_device`/`dmabuf_format`, hand them out as
+`FrameBuf::Dmabuf`, import them as VA surfaces, convert with stage A2's VPP,
+and fall back to shm on any failure. That is what M4 does, except the import
+goes through libva directly (`vaCreateSurfaces` with DRM PRIME 2) instead of
+FFmpeg's `AV_PIX_FMT_DRM_PRIME` mapping: the hand-written libva binding was
+already there, and the surface can be cached per buffer.
 
 ## Smaller things this surfaced
 
@@ -361,6 +352,99 @@ Quirks: CBR lands at 0.99x the target; the flood cannot go below ~8 Mbit/s
 on either codec (caps under that are not honoured); the 35M cap overshoots
 to ~35.9. VMAF saturates (>= 99.5) on code scrolling above ~2 Mbit/s, so its
 BD numbers come from linear interpolation over few points.
+
+## M4: zero-copy capture (2026-11-10)
+
+Branch `linux/dmabuf-capture` (on `linux/hevc`). Spike first
+(`research/dmabuf-spike/`, C: ext-image-copy-capture -> gbm -> VA import ->
+VPP), then the Rust path.
+
+**What Hyprland 0.57 offers** (eDP-1, spike; the headless od output ends
+up with the same XR24 I915_4_TILED buffers in the live runs; with
+and without `paint_cursors`): per format, `shm_format` then `dmabuf_format`
+for AR24 and XR24, each with modifiers [LINEAR, I915_X_TILED, I915_4_TILED,
+I915_4_TILED_LNL_CCS, INVALID]; `dmabuf_device` 226:128 (the render node
+itself); then `buffer_size`, `done`. Async `zwp_linux_buffer_params_v1.create`
+is accepted for every modifier (`create_immed` would make a refusal a fatal
+protocol error). No implicit fence is pending at `ready` (60/60): Hyprland
+has finished its copy, VPP can be queued at once.
+
+**The trap: compressed modifiers.** gbm picks `I915_4_TILED_LNL_CCS` (Xe2
+flat CCS) when it is offered. iHD 26.3.5 imports it with
+`VA_STATUS_SUCCESS`, VPP succeeds, and the output is **black** (16,128,128),
+with no error anywhere; the buffer itself is fine (gbm's mapped read shows
+the pixels). So the modifiers go through an allowlist
+(`dmabuf::importable_modifier`): on Intel LINEAR, X, Y, Yf and 4 tiling, on
+other vendors LINEAR only (untested; compression can fail as silently).
+Both capture (before gbm) and the importer (before `vaCreateSurfaces`)
+check it. With the filter gbm picks I915_4_TILED.
+
+**How it works.**
+* `dmabuf.rs`: libgbm `dlopen`ed like libva (the static tarball neither links
+  nor needs it); allocation on the render node behind `dmabuf_device`
+  (sysfs mapping for primary nodes); the bo is destroyed after export, the fds
+  keep the memory.
+* `wayland/capture.rs`: buffers are `Shm` or `Gpu`; GPU ones while
+  `CaptureOptions::gpu` (a shared flag the session creates for
+  `--encoder vaapi`) says the encoder wants them, else shm. Constraint batches
+  are tracked across `done`. `Dmabuf::hold` is a recycler token: the buffer
+  is not attached to a new frame until every clone is dropped; the encoder
+  keeps one in `InFlight` until the packet is out (VPP has read it by then).
+  `Dmabuf::id` is unique per buffer, so the importer caches the VA surface.
+* `encoder/vpp.rs`: `convert_dmabuf` imports (BGRX for XR24/AR24, RGBX for
+  XB24/AB24; iHD reads only the VA fourcc, the layer's DRM format is set to
+  the X variant anyway), caches up to 8 surfaces by id, runs the same VPP
+  colour parameters. First import ~0.1-0.9 ms, then free.
+* Fallback, per run like the HEVC one: the encoder declines GPU frames when it
+  has no GPU conversion; a GPU frame that fails to encode latches
+  `GPU_CAPTURE_FAILED`; capture then frees its buffers and **recreates the
+  session** on shm, so even a static screen gets a fresh first frame
+  (verified with the debug-only `OD_FAIL_DMABUF_IMPORT=1`). Capture also drops
+  to shm by itself after 3 failed frames on GPU buffers or a failed
+  allocation/`wl_buffer`. `OD_VAAPI_SHM_CAPTURE=1` forces shm for A/B.
+* wlr-screencopy (Hyprland < 0.57 under `auto`) and PipeWire (KDE, GNOME)
+  stay on shm.
+
+**Colours.** Flat-patch tests through gbm buffers, both byte orders, LINEAR
+and 4-tiled: red 63,102,240, blue 32,240,118, exact; end to end through
+H.264 and HEVC decode too (`vaapi_dmabuf_*` tests). A frame with a CCS
+modifier is refused, and the refusal leaves the shm GPU path working.
+
+**Measured** (iPad, Wi-Fi, HEVC, two passes, `results/2026-11-10-wifi-m4/`):
+
+| | CPU cores | CPU per frame | encode p50 | e2e p50 / p95 |
+|---|---|---|---|---|
+| M4 scroll | 0.076-0.079 | 1.3 ms | 10.8-11.6 ms | 23.5-26 / 29.5-34 ms |
+| M3 scroll | 0.153-0.157 | 2.6 ms | 13.0-13.1 ms | 26.5-27.5 / 33.5 ms |
+| M4 video | 0.222-0.246 | 3.9 ms | 12.9-13.3 ms | 29 / 37 ms |
+| M3 video | 0.342-0.351 | 5.8 ms | 16.1-16.2 ms | 27.5-29 / 39.5-40 ms |
+
+59 fps on the iPad throughout. The compositor's render engine is less busy
+too (scroll 27 vs 35 %). Battery follows run order again; no difference
+readable.
+
+**Where the CPU still goes** (perf, video, ms per frame): iHD encode submit
+and the kernel ioctls under `avcodec_send_frame` 1.37; VPP submit 0.92 (on
+imported tiled surfaces 0.62-0.99 ms against 0.46-0.58 ms on shm surfaces,
+likely the dma-resv fence work for external buffers); timer interrupts 0.55;
+od's NAL processing (`normalize_start_codes`, `access_units_for`) 0.29;
+FFmpeg's copy of the bitstream out of the coded buffer 0.26 (scales with
+bitrate: why video costs more than scroll). The capture->VPP part is now
+~1 ms; the rest is the encoder driver's own CPU, not pixels.
+
+**120 fps (M5 groundwork)** against `od-receiver --refresh 120`
+(`results/2026-11-10-m5-120fps-local/`, H.264, alternated): with dmabufs
+114-117 fps, encode p50 7.0-7.5 ms, p95 8.0-8.2 ms, media GT at **1200 MHz**
+(its max); with shm only 49-59 fps and the media GT at 0-500 MHz (the GPU
+idles while the CPU uploads, and the governor never clocks up). Zero-copy is
+what makes 120 fps possible here; p95 is right at the 8.3 ms budget.
+
+**Open.** HEVC at 120 fps (no receiver offers it at 120 yet); AMD and other
+vendors (LINEAR only, untested); multi-GPU (gbm allocates on the
+compositor's device, VA opens the default one; an import failure falls back
+to shm); a `wl_buffer` whose async `create` answers after the 1 s timeout
+leaks (rare); evicting a cached surface does not wait for a VPP still
+reading it (only after a resize).
 
 ## Future work this enables
 

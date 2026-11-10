@@ -1,0 +1,64 @@
+[2m2026-11-10T15:21:55.108667Z[0m [34mDEBUG[0m detect: HYPRLAND_INSTANCE_SIGNATURE=0aa6745f705f2c4b0a5004eb019ef76e5bbdb426_1793628615_593082903: socket /run/user/1000/hypr/0aa6745f705f2c4b0a5004eb019ef76e5bbdb426_1793628615_593082903/.socket.sock exists
+[2m2026-11-10T15:21:55.109004Z[0m [33m WARN[0m Hyprland 0.57.0 is newer than the tested 0.56.x; report problems with `od-sender doctor` output
+[2m2026-11-10T15:21:55.109022Z[0m [32m INFO[0m capture: ext-image-copy-capture (the standard capture protocol)
+[2m2026-11-10T15:21:55.110105Z[0m [32m INFO[0m backend hyprland: Hyprland 0.57.0 (IPC /run/user/1000/hypr/0aa6745f705f2c4b0a5004eb019ef76e5bbdb426_1793628615_593082903/.socket.sock) (creates outputs yes, resize in place yes, cursor metadata no, dmabuf no)
+[2m2026-11-10T15:21:55.174140Z[0m [32m INFO[0m connected to receiver 10.93.10.226:9000
+[2m2026-11-10T15:21:55.179027Z[0m [32m INFO[0m hello: 2388x1668 @120 scale 2 device Some("iPad") id Some("A0EC2343-F05E-4776-8903-8C62BB114896") pv 3
+[2m2026-11-10T15:21:55.179069Z[0m [34mDEBUG[0m config: [receiver."A0EC2343-F05E-4776-8903-8C62BB114896"] applies
+[2m2026-11-10T15:21:55.436659Z[0m [32m INFO[0m plan: panel 2388x1668 @2 -> output 2388x1668 @120Hz scale 2 (1194x834 logical) -> hevc 2388x1668 @60
+[2m2026-11-10T15:21:55.455287Z[0m [32m INFO[0m virtual display od-a0ec23 = 2388x1668 @120 scale 2 at 1440,0 (1194x834 logical)
+[2m2026-11-10T15:21:55.463112Z[0m [32m INFO[0m capturing output od-a0ec23
+[2m2026-11-10T15:21:55.463374Z[0m [32m INFO[0m session: 2388x1668 shm formats [Argb8888, Xrgb8888]
+[2m2026-11-10T15:21:55.463389Z[0m [34mDEBUG[0m session: dmabuf device Some(57984), formats AR24 [LINEAR, I915_X_TILED, I915_4_TILED, I915_4_TILED_LNL_CCS, INVALID], XR24 [LINEAR, I915_X_TILED, I915_4_TILED, I915_4_TILED_LNL_CCS, INVALID]
+[2m2026-11-10T15:21:55.463658Z[0m [34mDEBUG[0m workspace: dispatch hl.dsp.focus({ monitor = "od-a0ec23" })
+[2m2026-11-10T15:21:55.464624Z[0m [34mDEBUG[0m workspace: dispatch hl.dsp.focus({ workspace = "9" })
+[2m2026-11-10T15:21:55.466135Z[0m [34mDEBUG[0m workspace: dispatch hl.dsp.focus({ monitor = "eDP-1" })
+[2m2026-11-10T15:21:55.467413Z[0m [34mDEBUG[0m workspace: dispatch hl.dsp.cursor.move({ x = 720, y = 463 })
+[2m2026-11-10T15:21:55.545159Z[0m [34mDEBUG[0m allocated gbm buffer [3mwidth[0m[2m=[0m2388 [3mheight[0m[2m=[0m1668 [3mplanes[0m[2m=[0m1 [3mmodifier[0m[2m=[0mI915_4_TILED
+[2m2026-11-10T15:21:55.545653Z[0m [32m INFO[0m capture: GPU buffers XR24 I915_4_TILED on /dev/dri/renderD128
+[2m2026-11-10T15:21:55.545665Z[0m [34mDEBUG[0m allocated capture buffer 1 at 2388x1668 (GPU)
+[2m2026-11-10T15:21:55.596584Z[0m [32m INFO[0m workspace 9 on od-a0ec23
+[2m2026-11-10T15:21:55.596620Z[0m [32m INFO[0m Extending onto iPad (A0EC2343-F05E-4776-8903-8C62BB114896): 1194x834 logical at 2x (od-a0ec23, right of your other displays). Ctrl+C to stop.
+[2m2026-11-10T15:21:55.627092Z[0m [34mDEBUG[0m allocated gbm buffer [3mwidth[0m[2m=[0m2388 [3mheight[0m[2m=[0m1668 [3mplanes[0m[2m=[0m1 [3mmodifier[0m[2m=[0mI915_4_TILED
+[2m2026-11-10T15:21:55.627498Z[0m [34mDEBUG[0m allocated capture buffer 2 at 2388x1668 (GPU)
+[2m2026-11-10T15:21:55.648007Z[0m [34mDEBUG[0m allocated gbm buffer [3mwidth[0m[2m=[0m2388 [3mheight[0m[2m=[0m1668 [3mplanes[0m[2m=[0m1 [3mmodifier[0m[2m=[0mI915_4_TILED
+[2m2026-11-10T15:21:55.648311Z[0m [34mDEBUG[0m allocated capture buffer 3 at 2388x1668 (GPU)
+[2m2026-11-10T15:21:55.976060Z[0m [32m INFO[0m encoder: VA-API (hardware) HEVC, GPU colour conversion 2388x1668 35.0 Mbit/s, 8 threads
+[2m2026-11-10T15:21:55.976913Z[0m [34mDEBUG[0m VA-API: imported a capture buffer [3mid[0m[2m=[0m1 [3mmodifier[0m[2m=[0mI915_4_TILED [3mus[0m[2m=[0m145
+[2m2026-11-10T15:21:56.074966Z[0m [34mDEBUG[0m VA-API: imported a capture buffer [3mid[0m[2m=[0m3 [3mmodifier[0m[2m=[0mI915_4_TILED [3mus[0m[2m=[0m501
+[2m2026-11-10T15:21:56.077465Z[0m [34mDEBUG[0m allocated gbm buffer [3mwidth[0m[2m=[0m2388 [3mheight[0m[2m=[0m1668 [3mplanes[0m[2m=[0m1 [3mmodifier[0m[2m=[0mI915_4_TILED
+[2m2026-11-10T15:21:56.077998Z[0m [34mDEBUG[0m allocated capture buffer 4 at 2388x1668 (GPU)
+[2m2026-11-10T15:21:56.119841Z[0m [34mDEBUG[0m VA-API: imported a capture buffer [3mid[0m[2m=[0m2 [3mmodifier[0m[2m=[0mI915_4_TILED [3mus[0m[2m=[0m80
+[2m2026-11-10T15:21:56.143672Z[0m [34mDEBUG[0m VA-API: imported a capture buffer [3mid[0m[2m=[0m4 [3mmodifier[0m[2m=[0mI915_4_TILED [3mus[0m[2m=[0m96
+[2m2026-11-10T15:22:00.175360Z[0m [32m INFO[0m sent 6.6 fps 0.0 Mbit/s | encode p50 8.1 ms p95 33.3 ms | capture->send p50 14.5 ms p95 42.7 ms | SenderCounters { video_frames: 33, video_bytes: 16569, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:22:00.190133Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 34 frames: import 0.09, vpp submit 1.02, send_frame 13.64, receive_packet 0.01
+[2m2026-11-10T15:22:05.175602Z[0m [32m INFO[0m sent 0.2 fps 0.0 Mbit/s | encode p50 13.1 ms p95 13.1 ms | capture->send p50 13.5 ms p95 13.5 ms | SenderCounters { video_frames: 34, video_bytes: 16823, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:22:10.174805Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 34, video_bytes: 16823, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:22:11.860829Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 1 frames: import 0.01, vpp submit 0.82, send_frame 16.55, receive_packet 0.02
+[2m2026-11-10T15:22:13.871834Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 120 frames: import 0.01, vpp submit 0.85, send_frame 8.57, receive_packet 0.33
+[2m2026-11-10T15:22:13.882667Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"HEVC","cur":0,"curLost":0,"dec50":0,"e2e50":22,"e2e95":31,"enc50":17,"fps":59,"hitch":0,"inp50":0,"int50":17,"int95":19,"mbps":26.5,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":5,"stalls":0,"transport":"WiFi"}
+[2m2026-11-10T15:22:15.175634Z[0m [32m INFO[0m sent 39.6 fps 17.2 Mbit/s | encode p50 10.3 ms p95 11.3 ms | capture->send p50 16.7 ms p95 26.8 ms | SenderCounters { video_frames: 232, video_bytes: 10801850, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:22:15.872816Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 119 frames: import 0.01, vpp submit 0.89, send_frame 9.56, receive_packet 0.41
+[2m2026-11-10T15:22:17.887678Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 120 frames: import 0.01, vpp submit 0.63, send_frame 10.30, receive_packet 0.28
+[2m2026-11-10T15:22:18.931495Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"HEVC","cur":0,"curLost":0,"dec50":0,"e2e50":26,"e2e95":33,"enc50":19,"fps":59,"hitch":0,"inp50":0,"int50":17,"int95":19,"mbps":26.5,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":6,"stalls":0,"transport":"WiFi"}
+[2m2026-11-10T15:22:19.895204Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 119 frames: import 0.01, vpp submit 0.66, send_frame 11.27, receive_packet 0.29
+[2m2026-11-10T15:22:20.175261Z[0m [32m INFO[0m sent 59.4 fps 26.6 Mbit/s | encode p50 11.6 ms p95 13.3 ms | capture->send p50 20.2 ms p95 27.9 ms | SenderCounters { video_frames: 529, video_bytes: 27434110, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:22:21.910832Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 120 frames: import 0.01, vpp submit 0.79, send_frame 11.70, receive_packet 0.38
+[2m2026-11-10T15:22:23.914050Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 119 frames: import 0.01, vpp submit 0.86, send_frame 11.79, receive_packet 0.40
+[2m2026-11-10T15:22:23.974972Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"HEVC","cur":0,"curLost":0,"dec50":0,"e2e50":30,"e2e95":36,"enc50":23,"fps":59,"hitch":0,"inp50":0,"int50":17,"int95":18,"mbps":26.4,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":9,"stalls":0,"transport":"WiFi"}
+[2m2026-11-10T15:22:25.175310Z[0m [32m INFO[0m sent 59.6 fps 26.4 Mbit/s | encode p50 13.1 ms p95 14.0 ms | capture->send p50 19.8 ms p95 28.9 ms | SenderCounters { video_frames: 827, video_bytes: 43944774, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:22:25.917266Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 119 frames: import 0.01, vpp submit 0.77, send_frame 11.58, receive_packet 0.36
+[2m2026-11-10T15:22:27.918244Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 119 frames: import 0.01, vpp submit 0.87, send_frame 12.85, receive_packet 0.41
+[2m2026-11-10T15:22:29.018502Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"HEVC","cur":0,"curLost":0,"dec50":0,"e2e50":28,"e2e95":37,"enc50":21,"fps":59,"hitch":0,"inp50":0,"int50":17,"int95":18,"mbps":26.8,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":5,"stalls":0,"transport":"WiFi"}
+[2m2026-11-10T15:22:29.932541Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 120 frames: import 0.01, vpp submit 0.65, send_frame 12.21, receive_packet 0.29
+[2m2026-11-10T15:22:30.175137Z[0m [32m INFO[0m sent 59.4 fps 26.6 Mbit/s | encode p50 13.5 ms p95 14.9 ms | capture->send p50 22.6 ms p95 30.5 ms | SenderCounters { video_frames: 1124, video_bytes: 60603536, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:22:31.947926Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 120 frames: import 0.01, vpp submit 0.70, send_frame 12.39, receive_packet 0.32
+[2m2026-11-10T15:22:33.961201Z[0m [34mDEBUG[0m hevc_vaapi: avg ms over 120 frames: import 0.01, vpp submit 0.59, send_frame 12.15, receive_packet 0.28
+[2m2026-11-10T15:22:34.056253Z[0m [32m INFO[0m PHONE-STATS {"capFps":0,"codec":"HEVC","cur":0,"curLost":0,"dec50":0,"e2e50":32,"e2e95":37,"enc50":24,"fps":59,"hitch":0,"inp50":0,"int50":17,"int95":18,"mbps":26.5,"offsetKnown":true,"ph50":0,"ph95":0,"rtt":8,"stalls":0,"transport":"WiFi"}
+[2m2026-11-10T15:22:35.082292Z[0m [32m INFO[0m SIGTERM: shutting down
+[2m2026-11-10T15:22:35.084877Z[0m [34mDEBUG[0m input thread done
+[2m2026-11-10T15:22:35.095660Z[0m [32m INFO[0m 1499 frames in 39.6s: first after 134 ms; interval p50 16.6 ms, p95 18.2 ms, min 3.1 ms
+[2m2026-11-10T15:22:35.101642Z[0m [32m INFO[0m removed virtual display od-a0ec23
+[2m2026-11-10T15:22:35.101752Z[0m [34mDEBUG[0m convert stage done
+[2m2026-11-10T15:22:35.104077Z[0m [34mDEBUG[0m encoder thread done
+[2m2026-11-10T15:22:35.132136Z[0m [32m INFO[0m connection ended

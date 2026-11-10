@@ -1,0 +1,59 @@
+[2m2026-11-10T15:41:49.705521Z[0m [34mDEBUG[0m detect: HYPRLAND_INSTANCE_SIGNATURE=0aa6745f705f2c4b0a5004eb019ef76e5bbdb426_1793628615_593082903: socket /run/user/1000/hypr/0aa6745f705f2c4b0a5004eb019ef76e5bbdb426_1793628615_593082903/.socket.sock exists
+[2m2026-11-10T15:41:49.705984Z[0m [33m WARN[0m Hyprland 0.57.0 is newer than the tested 0.56.x; report problems with `od-sender doctor` output
+[2m2026-11-10T15:41:49.706004Z[0m [32m INFO[0m capture: ext-image-copy-capture (the standard capture protocol)
+[2m2026-11-10T15:41:49.707534Z[0m [32m INFO[0m backend hyprland: Hyprland 0.57.0 (IPC /run/user/1000/hypr/0aa6745f705f2c4b0a5004eb019ef76e5bbdb426_1793628615_593082903/.socket.sock) (creates outputs yes, resize in place yes, cursor metadata no, dmabuf no)
+[2m2026-11-10T15:41:49.707908Z[0m [32m INFO[0m connected to receiver 127.0.0.1:9100
+[2m2026-11-10T15:41:49.708330Z[0m [32m INFO[0m hello: 2388x1668 @120 scale 2 device Some("Linux") id Some("55B97FA7-C514-40E6-9C03-CAA4935AA4EF") pv 3
+[2m2026-11-10T15:41:49.708507Z[0m [32m INFO[0m plan: panel 2388x1668 @2 points 1194x834 -> output 2388x1668 @120Hz scale 2 (1194x834 logical) -> h264 2388x1668 @120
+[2m2026-11-10T15:41:49.728521Z[0m [32m INFO[0m virtual display od-55b97f = 2388x1668 @120 scale 2 at 1440,0 (1194x834 logical)
+[2m2026-11-10T15:41:49.728683Z[0m [32m INFO[0m capture: shared memory (OD_VAAPI_SHM_CAPTURE=1)
+[2m2026-11-10T15:41:49.735642Z[0m [32m INFO[0m capturing output od-55b97f
+[2m2026-11-10T15:41:49.735812Z[0m [32m INFO[0m session: 2388x1668 shm formats [Argb8888, Xrgb8888]
+[2m2026-11-10T15:41:49.735908Z[0m [34mDEBUG[0m allocated capture buffer 1 at 2388x1668 (shared memory)
+[2m2026-11-10T15:41:49.736719Z[0m [34mDEBUG[0m workspace: dispatch hl.dsp.focus({ monitor = "od-55b97f" })
+[2m2026-11-10T15:41:49.737488Z[0m [34mDEBUG[0m workspace: dispatch hl.dsp.focus({ workspace = "9" })
+[2m2026-11-10T15:41:49.738559Z[0m [34mDEBUG[0m workspace: dispatch hl.dsp.focus({ monitor = "eDP-1" })
+[2m2026-11-10T15:41:49.740001Z[0m [34mDEBUG[0m workspace: dispatch hl.dsp.cursor.move({ x = 720, y = 463 })
+[2m2026-11-10T15:41:49.773380Z[0m [34mDEBUG[0m allocated capture buffer 2 at 2388x1668 (shared memory)
+[2m2026-11-10T15:41:49.806984Z[0m [34mDEBUG[0m allocated capture buffer 3 at 2388x1668 (shared memory)
+[2m2026-11-10T15:41:49.851662Z[0m [32m INFO[0m workspace 9 on od-55b97f
+[2m2026-11-10T15:41:49.851692Z[0m [32m INFO[0m Extending onto Linux (55B97FA7-C514-40E6-9C03-CAA4935AA4EF): 1194x834 logical at 2x (od-55b97f, right of your other displays). Ctrl+C to stop.
+[2m2026-11-10T15:41:49.926064Z[0m [32m INFO[0m encoder: VA-API (hardware), GPU colour conversion 2388x1668 20.0 Mbit/s, 8 threads
+[2m2026-11-10T15:41:49.962246Z[0m [34mDEBUG[0m allocated capture buffer 4 at 2388x1668 (shared memory)
+[2m2026-11-10T15:41:52.707837Z[0m [32m INFO[0m PHONE-STATS {"decErr":0,"decoder":"none","e2e50":11.4,"e2e95":16.6,"fps":16.6,"idr":1,"mbps":0.1,"net50":0.2,"offsetKnown":true,"rtt":0.168212890625,"stalls":0,"transport":"wifi"}
+[2m2026-11-10T15:41:54.709263Z[0m [32m INFO[0m sent 16.6 fps 0.1 Mbit/s | encode p50 9.3 ms p95 15.9 ms | capture->send p50 11.0 ms p95 18.3 ms | SenderCounters { video_frames: 83, video_bytes: 52304, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:41:56.152446Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 84 frames: upload 2.38, vpp submit 0.60, send_frame 7.03, receive_packet 0.01
+[2m2026-11-10T15:41:57.707264Z[0m [32m INFO[0m PHONE-STATS {"decErr":0,"decoder":"none","e2e50":12.2,"e2e95":17.6,"fps":34.0,"idr":0,"mbps":6.5,"net50":0.4,"offsetKnown":true,"rtt":0.168212890625,"stalls":0,"transport":"wifi"}
+[2m2026-11-10T15:41:58.155904Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 218 frames: upload 2.34, vpp submit 0.42, send_frame 6.28, receive_packet 0.11
+[2m2026-11-10T15:41:59.709402Z[0m [32m INFO[0m sent 76.2 fps 13.6 Mbit/s | encode p50 9.1 ms p95 10.5 ms | capture->send p50 12.7 ms p95 17.6 ms | SenderCounters { video_frames: 464, video_bytes: 8546362, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:42:00.162001Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 195 frames: upload 2.38, vpp submit 0.43, send_frame 6.54, receive_packet 0.11
+[2m2026-11-10T15:42:02.170941Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 217 frames: upload 2.22, vpp submit 0.38, send_frame 6.33, receive_packet 0.10
+[2m2026-11-10T15:42:02.707613Z[0m [32m INFO[0m PHONE-STATS {"decErr":0,"decoder":"none","e2e50":12.7,"e2e95":17.9,"fps":103.4,"idr":0,"mbps":17.3,"net50":0.4,"offsetKnown":true,"rtt":0.168212890625,"stalls":0,"transport":"wifi"}
+[2m2026-11-10T15:42:04.179897Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 160 frames: upload 2.32, vpp submit 0.40, send_frame 6.54, receive_packet 0.11
+[2m2026-11-10T15:42:04.709724Z[0m [32m INFO[0m sent 87.6 fps 14.6 Mbit/s | encode p50 9.1 ms p95 11.3 ms | capture->send p50 11.2 ms p95 17.1 ms | SenderCounters { video_frames: 902, video_bytes: 17682628, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:42:06.184579Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 101 frames: upload 2.19, vpp submit 0.38, send_frame 8.80, receive_packet 0.11
+[2m2026-11-10T15:42:07.707502Z[0m [32m INFO[0m PHONE-STATS {"decErr":0,"decoder":"none","e2e50":12.5,"e2e95":15.4,"fps":55.8,"idr":0,"mbps":9.2,"net50":0.5,"offsetKnown":true,"rtt":0.168212890625,"stalls":0,"transport":"wifi"}
+[2m2026-11-10T15:42:08.201356Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 99 frames: upload 1.91, vpp submit 0.33, send_frame 11.34, receive_packet 0.10
+[2m2026-11-10T15:42:09.708870Z[0m [32m INFO[0m sent 48.4 fps 7.9 Mbit/s | encode p50 13.9 ms p95 16.2 ms | capture->send p50 14.2 ms p95 16.5 ms | SenderCounters { video_frames: 1144, video_bytes: 22636616, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:42:10.219571Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 95 frames: upload 1.91, vpp submit 0.35, send_frame 13.35, receive_packet 0.10
+[2m2026-11-10T15:42:12.234106Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 99 frames: upload 2.50, vpp submit 0.42, send_frame 14.09, receive_packet 0.13
+[2m2026-11-10T15:42:12.707840Z[0m [32m INFO[0m PHONE-STATS {"decErr":0,"decoder":"none","e2e50":17.0,"e2e95":18.9,"fps":48.6,"idr":0,"mbps":8.0,"net50":0.5,"offsetKnown":true,"rtt":0.168212890625,"stalls":0,"transport":"wifi"}
+[2m2026-11-10T15:42:14.238979Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 99 frames: upload 2.08, vpp submit 0.35, send_frame 13.89, receive_packet 0.11
+[2m2026-11-10T15:42:14.709704Z[0m [32m INFO[0m sent 49.2 fps 8.1 Mbit/s | encode p50 16.3 ms p95 18.1 ms | capture->send p50 16.6 ms p95 18.4 ms | SenderCounters { video_frames: 1390, video_bytes: 27683866, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:42:16.258744Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 102 frames: upload 1.79, vpp submit 0.31, send_frame 13.68, receive_packet 0.09
+[2m2026-11-10T15:42:17.707309Z[0m [32m INFO[0m PHONE-STATS {"decErr":0,"decoder":"none","e2e50":16.8,"e2e95":18.3,"fps":49.2,"idr":0,"mbps":8.0,"net50":0.5,"offsetKnown":true,"rtt":0.168212890625,"stalls":0,"transport":"wifi"}
+[2m2026-11-10T15:42:18.260975Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 97 frames: upload 2.14, vpp submit 0.40, send_frame 13.83, receive_packet 0.13
+[2m2026-11-10T15:42:19.709385Z[0m [32m INFO[0m sent 49.0 fps 8.0 Mbit/s | encode p50 16.2 ms p95 18.0 ms | capture->send p50 16.4 ms p95 18.4 ms | SenderCounters { video_frames: 1635, video_bytes: 32697688, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:42:20.276872Z[0m [34mDEBUG[0m h264_vaapi: avg ms over 98 frames: upload 2.71, vpp submit 0.44, send_frame 14.09, receive_packet 0.14
+[2m2026-11-10T15:42:22.012362Z[0m [34mDEBUG[0m input thread done
+[2m2026-11-10T15:42:22.020294Z[0m [32m INFO[0m 1836 frames in 32.3s: first after 37 ms; interval p50 17.9 ms, p95 22.1 ms, min 4.9 ms
+[2m2026-11-10T15:42:22.032206Z[0m [32m INFO[0m removed virtual display od-55b97f
+[2m2026-11-10T15:42:22.032465Z[0m [34mDEBUG[0m convert stage done
+[2m2026-11-10T15:42:22.042813Z[0m [34mDEBUG[0m encoder thread done
+[2m2026-11-10T15:42:22.079033Z[0m [33m WARN[0m session error: read: Connection reset by peer (os error 104)
+[2m2026-11-10T15:42:22.079089Z[0m [34mDEBUG[0m redialing in 500ms
+[2m2026-11-10T15:42:22.580869Z[0m [33m WARN[0m dial 127.0.0.1:9100: Connection refused (os error 111)
+[2m2026-11-10T15:42:22.580931Z[0m [34mDEBUG[0m redialing in 1s
+[2m2026-11-10T15:42:23.581965Z[0m [33m WARN[0m dial 127.0.0.1:9100: Connection refused (os error 111)
+[2m2026-11-10T15:42:23.582003Z[0m [34mDEBUG[0m redialing in 2s
+[2m2026-11-10T15:42:23.666827Z[0m [32m INFO[0m SIGTERM: shutting down

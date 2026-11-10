@@ -1,0 +1,23 @@
+[2m2026-11-10T15:26:20.134175Z[0m [33m WARN[0m Hyprland 0.57.0 is newer than the tested 0.56.x; report problems with `od-sender doctor` output
+[2m2026-11-10T15:26:20.134298Z[0m [32m INFO[0m capture: ext-image-copy-capture (the standard capture protocol)
+[2m2026-11-10T15:26:20.135501Z[0m [32m INFO[0m backend hyprland: Hyprland 0.57.0 (IPC /run/user/1000/hypr/0aa6745f705f2c4b0a5004eb019ef76e5bbdb426_1793628615_593082903/.socket.sock) (creates outputs yes, resize in place yes, cursor metadata no, dmabuf no)
+[2m2026-11-10T15:26:20.184371Z[0m [32m INFO[0m connected to receiver 10.93.10.226:9000
+[2m2026-11-10T15:26:20.189018Z[0m [32m INFO[0m hello: 2388x1668 @120 scale 2 device Some("iPad") id Some("A0EC2343-F05E-4776-8903-8C62BB114896") pv 3
+[2m2026-11-10T15:26:20.453536Z[0m [32m INFO[0m plan: panel 2388x1668 @2 -> output 2388x1668 @120Hz scale 2 (1194x834 logical) -> hevc 2388x1668 @60
+[2m2026-11-10T15:26:20.470821Z[0m [32m INFO[0m virtual display od-a0ec23 = 2388x1668 @120 scale 2 at 1440,0 (1194x834 logical)
+[2m2026-11-10T15:26:20.487393Z[0m [32m INFO[0m capturing output od-a0ec23
+[2m2026-11-10T15:26:20.487607Z[0m [32m INFO[0m session: 2388x1668 shm formats [Argb8888, Xrgb8888]
+[2m2026-11-10T15:26:20.686171Z[0m [32m INFO[0m workspace 9 on od-a0ec23
+[2m2026-11-10T15:26:20.686234Z[0m [32m INFO[0m Extending onto iPad (A0EC2343-F05E-4776-8903-8C62BB114896): 1194x834 logical at 2x (od-a0ec23, right of your other displays). Ctrl+C to stop.
+[2m2026-11-10T15:26:20.724173Z[0m [32m INFO[0m encoder: VA-API (hardware) HEVC, GPU colour conversion 2388x1668 35.0 Mbit/s, 8 threads
+[2m2026-11-10T15:26:25.185676Z[0m [32m INFO[0m sent 11.4 fps 0.0 Mbit/s | encode p50 11.5 ms p95 18.8 ms | capture->send p50 16.8 ms p95 26.3 ms | SenderCounters { video_frames: 57, video_bytes: 32961, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:26:30.185440Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 57, video_bytes: 32961, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:26:35.185331Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 57, video_bytes: 32961, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:26:40.185982Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 57, video_bytes: 32961, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:26:45.185598Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 57, video_bytes: 32961, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:26:50.185484Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 57, video_bytes: 32961, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:26:55.186143Z[0m [32m INFO[0m sent 0.0 fps 0.0 Mbit/s | encode p50 0.0 ms p95 0.0 ms | capture->send p50 0.0 ms p95 0.0 ms | SenderCounters { video_frames: 57, video_bytes: 32961, dropped_awaiting_idr: 0, kf_requests: 1, control_ignored: 0 }
+[2m2026-11-10T15:26:58.498361Z[0m [32m INFO[0m SIGINT: shutting down
+[2m2026-11-10T15:26:58.649964Z[0m [32m INFO[0m 97 frames in 38.2s: first after 29 ms; interval p50 10.8 ms, p95 37.4 ms, min 5.6 ms
+[2m2026-11-10T15:26:58.663058Z[0m [32m INFO[0m removed virtual display od-a0ec23
+[2m2026-11-10T15:26:58.684233Z[0m [32m INFO[0m connection ended

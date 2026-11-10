@@ -1,0 +1,420 @@
+=== struct layout (x86_64) for hand-written bindings ===
+sizeof(VADRMPRIMESurfaceDescriptor)=312
+  offsetof(fourcc)=0
+  offsetof(width)=4
+  offsetof(height)=8
+  offsetof(num_objects)=12
+  offsetof(objects)=16
+  offsetof(objects[0].fd)=16
+  offsetof(objects[0].size)=20
+  offsetof(objects[0].drm_format_modifier)=24
+  offsetof(objects[1])=32
+  offsetof(num_layers)=80
+  offsetof(layers)=84
+  offsetof(layers[0].drm_format)=84
+  offsetof(layers[0].num_planes)=88
+  offsetof(layers[0].object_index)=92
+  offsetof(layers[0].offset)=108
+  offsetof(layers[0].pitch)=124
+  offsetof(layers[1])=140
+  sizeof(objects[0])=16 sizeof(layers[0])=56
+sizeof(VASurfaceAttrib)=24 offsetof(type)=0 flags=4 value=8; sizeof(VAGenericValue)=16 value.type@0 value.value@8
+VASurfaceAttribMemoryType=6 VASurfaceAttribExternalBufferDescriptor=7 VA_SURFACE_ATTRIB_SETTABLE=0x2 VAGenericValueTypeInteger=1 VAGenericValueTypePointer=3
+VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2=0x40000000 VA_RT_FORMAT_RGB32=0x00020000 VA_FOURCC_BGRX=0x58524742 VA_FOURCC_XRGB=0x42475258 VA_FOURCC_RGBX=0x58424752 VA_FOURCC_BGRA=0x41524742
+DRM_FORMAT_XRGB8888=0x34325258 DRM_FORMAT_ARGB8888=0x34325241 DRM_FORMAT_XBGR8888=0x34324258 GBM_BO_USE_RENDERING=0x4 GBM_BO_TRANSFER_WRITE=0x2
+DMA_BUF_IOCTL_EXPORT_SYNC_FILE=0xc0086202 sizeof(struct dma_buf_export_sync_file)=8 DMA_BUF_SYNC_READ=1
+
+registry: zwp_linux_dmabuf_v1 advertised v5, bound v3
+wl_output 0: eDP-1 2880x1800
+using output eDP-1
+zwp_linux_dmabuf_v1 (v3) global XRGB8888 modifiers: 0x0(LINEAR) 0x100000000000001(I915_X_TILED) 0x100000000000009(I915_4_TILED) 0x100000000000010(I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) 0xffffffffffffff(INVALID(implicit))
+
+=== Q1: session on eDP-1, options=0 ===
+  [0] shm_format 0 (ARGB8888)
+  [1] dmabuf_format AR24 (0x34325241), 5 modifiers:
+        0x0000000000000000 LINEAR
+        0x0100000000000001 I915_X_TILED
+        0x0100000000000009 I915_4_TILED
+        0x0100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)
+        0x00ffffffffffffff INVALID(implicit)
+  [2] shm_format 1 (XRGB8888)
+  [3] dmabuf_format XR24 (0x34325258), 5 modifiers:
+        0x0000000000000000 LINEAR
+        0x0100000000000001 I915_X_TILED
+        0x0100000000000009 I915_4_TILED
+        0x0100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)
+        0x00ffffffffffffff INVALID(implicit)
+  [4] dmabuf_device (array 8 bytes) dev_t=226:128
+  [5] buffer_size 2880x1800
+  [6] done
+event order: shm_format dmabuf_format shm_format dmabuf_format dmabuf_device buffer_size done
+
+=== Q1: session on eDP-1, options=paint_cursors ===
+  [0] shm_format 0 (ARGB8888)
+  [1] dmabuf_format AR24 (0x34325241), 5 modifiers:
+        0x0000000000000000 LINEAR
+        0x0100000000000001 I915_X_TILED
+        0x0100000000000009 I915_4_TILED
+        0x0100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)
+        0x00ffffffffffffff INVALID(implicit)
+  [2] shm_format 1 (XRGB8888)
+  [3] dmabuf_format XR24 (0x34325258), 5 modifiers:
+        0x0000000000000000 LINEAR
+        0x0100000000000001 I915_X_TILED
+        0x0100000000000009 I915_4_TILED
+        0x0100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)
+        0x00ffffffffffffff INVALID(implicit)
+  [4] dmabuf_device (array 8 bytes) dev_t=226:128
+  [5] buffer_size 2880x1800
+  [6] done
+event order: shm_format dmabuf_format shm_format dmabuf_format dmabuf_device buffer_size done
+paint_cursors session identical to options=0 session (size/#fmts/#shm): yes
+dmabuf_device 226:128 -> /sys/dev/char/226:128/device/drm: renderD128 controlD64 card0  [dev_t is /dev/dri/renderD128]
+  -> render node: /dev/dri/renderD128
+
+chosen capture format XR24 with 5 modifiers, size 2880x1800
+VA 1.24 driver: Intel iHD driver for Intel(R) Gen Graphics - 26.3.5 ()
+vaCreateContext(VPP, no render targets): success (no error)
+VPP config surface attribs: pixel formats: NV12 I420 YV12 YUY2 UYVY 422H 422V RGBA BGRA RGBP RGBX P010 RG24 ARGB ABGR AR30 AB30 XR30 XB30 AYUV Y210 Y410 P012 Y212 Y412 XYUV [memtypes=0x78000005]
+gbm backend: drm on /dev/dri/renderD128
+
+=== Q2-Q5: allocate / capture / import / VPP ===
+gbm alloc default(all compositor mods) XR24 2880x1800 -> modifier 0x0100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed), planes=1 [p0 stride=11520 offset=0] dmabuf size=23068672
+gbm alloc default-minus-CCS            XR24 2880x1800 -> modifier 0x0100000000000009 I915_4_TILED, planes=1 [p0 stride=11520 offset=0] dmabuf size=23068672
+gbm alloc linear-only                  XR24 2880x1800 -> modifier 0x0000000000000000 LINEAR, planes=1 [p0 stride=11520 offset=0] dmabuf size=20971520
+gbm alloc only-0x100000000000001       XR24 2880x1800 -> modifier 0x0100000000000001 I915_X_TILED, planes=1 [p0 stride=11776 offset=0] dmabuf size=23068672
+gbm alloc only-0x100000000000009       XR24 2880x1800 -> modifier 0x0100000000000009 I915_4_TILED, planes=1 [p0 stride=11520 offset=0] dmabuf size=23068672
+gbm alloc only-0x100000000000010       XR24 2880x1800 -> modifier 0x0100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed), planes=1 [p0 stride=11520 offset=0] dmabuf size=23068672
+
+-- default(all compositor mods): modifier 0x100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)
+  wl_buffer for default(all compositor mods): created
+  capture default(all compositor mods): READY in 6.79 ms (presentation_time->ready 4.78 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  VA import default(all compositor mods) (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_BGRX: success (no error) (0) [0.233 ms wall, 0.235 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import default(all compositor mods) (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_XRGB: success (no error) (0) [0.019 ms wall, 0.022 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import default(all compositor mods) (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_BGRA: success (no error) (0) [0.056 ms wall, 0.060 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import default(all compositor mods) (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_ARGB: success (no error) (0) [0.053 ms wall, 0.056 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VPP NV12 from screen: (1440,900)=16,128,128 (8,8)=16,128,128 (2872,8)=16,128,128 (8,1792)=16,128,128 (2872,1792)=16,128,128 hash=ef91667e032a2b59
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,900)=0,0,0,0 (8,8)=34,34,34,0 (2872,8)=34,34,34,0 (8,1792)=3,3,4,0 (2872,1792)=20,20,20,0
+
+-- default-minus-CCS: modifier 0x100000000000009 I915_4_TILED
+  wl_buffer for default-minus-CCS: created
+  capture default-minus-CCS: READY in 5.15 ms (presentation_time->ready 4.09 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  VA import default-minus-CCS (DRM XR24 mod I915_4_TILED) as VA_FOURCC_BGRX: success (no error) (0) [0.066 ms wall, 0.069 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import default-minus-CCS (DRM XR24 mod I915_4_TILED) as VA_FOURCC_XRGB: success (no error) (0) [0.059 ms wall, 0.063 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import default-minus-CCS (DRM XR24 mod I915_4_TILED) as VA_FOURCC_BGRA: success (no error) (0) [0.056 ms wall, 0.061 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import default-minus-CCS (DRM XR24 mod I915_4_TILED) as VA_FOURCC_ARGB: success (no error) (0) [0.054 ms wall, 0.058 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VPP NV12 from screen: (1440,900)=16,128,128 (8,8)=45,128,128 (2872,8)=45,128,128 (8,1792)=19,128,128 (2872,1792)=33,128,128 hash=ef30c47ef2d31fbe
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,900)=0,0,0,0 (8,8)=34,34,34,0 (2872,8)=34,34,34,0 (8,1792)=3,3,4,0 (2872,1792)=20,20,20,0
+
+-- linear-only: modifier 0x0 LINEAR
+  wl_buffer for linear-only: created
+  capture linear-only: READY in 488.46 ms (presentation_time->ready 7.63 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  VA import linear-only (DRM XR24 mod LINEAR) as VA_FOURCC_BGRX: success (no error) (0) [0.114 ms wall, 0.117 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import linear-only (DRM XR24 mod LINEAR) as VA_FOURCC_XRGB: success (no error) (0) [0.028 ms wall, 0.030 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import linear-only (DRM XR24 mod LINEAR) as VA_FOURCC_BGRA: success (no error) (0) [0.017 ms wall, 0.019 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import linear-only (DRM XR24 mod LINEAR) as VA_FOURCC_ARGB: success (no error) (0) [0.015 ms wall, 0.017 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VPP NV12 from screen: (1440,900)=16,128,128 (8,8)=45,128,128 (2872,8)=45,128,128 (8,1792)=19,128,128 (2872,1792)=33,128,128 hash=d26e4b3665b58205
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,900)=0,0,0,0 (8,8)=34,34,34,0 (2872,8)=34,34,34,0 (8,1792)=3,3,4,0 (2872,1792)=20,20,20,0
+
+-- only-0x100000000000001: modifier 0x100000000000001 I915_X_TILED
+  wl_buffer for only-0x100000000000001: created
+  capture only-0x100000000000001: READY in 528.60 ms (presentation_time->ready 4.47 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  VA import only-0x100000000000001 (DRM XR24 mod I915_X_TILED) as VA_FOURCC_BGRX: success (no error) (0) [0.102 ms wall, 0.104 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000001 (DRM XR24 mod I915_X_TILED) as VA_FOURCC_XRGB: success (no error) (0) [0.036 ms wall, 0.039 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000001 (DRM XR24 mod I915_X_TILED) as VA_FOURCC_BGRA: success (no error) (0) [0.056 ms wall, 0.061 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import only-0x100000000000001 (DRM XR24 mod I915_X_TILED) as VA_FOURCC_ARGB: success (no error) (0) [0.051 ms wall, 0.055 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VPP NV12 from screen: (1440,900)=16,128,128 (8,8)=45,128,128 (2872,8)=45,128,128 (8,1792)=19,128,128 (2872,1792)=33,128,128 hash=ef30c47ef2d31fbe
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,900)=0,0,0,0 (8,8)=34,34,34,0 (2872,8)=34,34,34,0 (8,1792)=3,3,4,0 (2872,1792)=20,20,20,0
+
+-- only-0x100000000000009: modifier 0x100000000000009 I915_4_TILED
+  wl_buffer for only-0x100000000000009: created
+  capture only-0x100000000000009: READY in 530.71 ms (presentation_time->ready 2.49 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  VA import only-0x100000000000009 (DRM XR24 mod I915_4_TILED) as VA_FOURCC_BGRX: success (no error) (0) [0.070 ms wall, 0.072 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000009 (DRM XR24 mod I915_4_TILED) as VA_FOURCC_XRGB: success (no error) (0) [0.023 ms wall, 0.026 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000009 (DRM XR24 mod I915_4_TILED) as VA_FOURCC_BGRA: success (no error) (0) [0.019 ms wall, 0.022 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import only-0x100000000000009 (DRM XR24 mod I915_4_TILED) as VA_FOURCC_ARGB: success (no error) (0) [0.016 ms wall, 0.018 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VPP NV12 from screen: (1440,900)=16,128,128 (8,8)=45,128,128 (2872,8)=45,128,128 (8,1792)=19,128,128 (2872,1792)=33,128,128 hash=d26e4b3665b58205
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,900)=0,0,0,0 (8,8)=34,34,34,0 (2872,8)=34,34,34,0 (8,1792)=3,3,4,0 (2872,1792)=20,20,20,0
+
+-- only-0x100000000000010: modifier 0x100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)
+  wl_buffer for only-0x100000000000010: created
+  capture only-0x100000000000010: READY in 520.21 ms (presentation_time->ready 1.33 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  VA import only-0x100000000000010 (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_BGRX: success (no error) (0) [0.101 ms wall, 0.103 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000010 (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_XRGB: success (no error) (0) [0.029 ms wall, 0.032 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000010 (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_BGRA: success (no error) (0) [0.024 ms wall, 0.027 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import only-0x100000000000010 (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_ARGB: success (no error) (0) [0.057 ms wall, 0.061 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VPP NV12 from screen: (1440,900)=16,128,128 (8,8)=16,128,128 (2872,8)=16,128,128 (8,1792)=16,128,128 (2872,1792)=16,128,128 hash=873394fdce6da206
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,900)=0,0,0,0 (8,8)=34,34,34,0 (2872,8)=34,34,34,0 (8,1792)=3,3,4,0 (2872,1792)=20,20,20,0
+
+=== Q5: synthetic red/blue colour check ===
+gbm alloc linear                       XR24 2880x1800 -> modifier 0x0000000000000000 LINEAR, planes=1 [p0 stride=11520 offset=0] dmabuf size=20971520
+  gbm_bo_map(WRITE)+fill+unmap on linear ok (map stride=11520, 8.59 ms)
+  VA import linear (DRM XR24 mod LINEAR) as VA_FOURCC_BGRX: success (no error) (0) [0.054 ms wall, 0.056 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import linear (DRM XR24 mod LINEAR) as VA_FOURCC_XRGB: success (no error) (0) [0.034 ms wall, 0.037 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import linear (DRM XR24 mod LINEAR) as VA_FOURCC_BGRA: success (no error) (0) [0.053 ms wall, 0.057 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import linear (DRM XR24 mod LINEAR) as VA_FOURCC_ARGB: success (no error) (0) [0.091 ms wall, 0.068 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,450)=0,0,255,255 (1440,1350)=255,0,0,255
+  synthetic VPP: top=63,102,240 (want 63,102,240) bottom=32,240,118 (want 32,240,118) -> PASS
+  gbm_bo_map(WRITE)+fill+unmap on linear ok (map stride=11520, 2.12 ms)
+  cached-surface aliasing: after CPU rewrite top=32,240,118 bottom=63,102,240 hash 3816020793571083 -> 9d963ecffdf31083 -> PASS (surface aliases bo memory)
+gbm alloc default(compositor mods)     XR24 2880x1800 -> modifier 0x0100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed), planes=1 [p0 stride=11520 offset=0] dmabuf size=23068672
+  gbm_bo_map(WRITE)+fill+unmap on default(compositor mods) ok (map stride=11520, 7.60 ms)
+  VA import default(compositor mods) (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_BGRX: success (no error) (0) [0.054 ms wall, 0.055 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import default(compositor mods) (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_XRGB: success (no error) (0) [0.024 ms wall, 0.026 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import default(compositor mods) (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_BGRA: success (no error) (0) [0.020 ms wall, 0.022 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import default(compositor mods) (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_ARGB: success (no error) (0) [0.019 ms wall, 0.021 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,450)=0,0,255,255 (1440,1350)=255,0,0,255
+  synthetic VPP: top=16,128,128 (want 63,102,240) bottom=16,128,128 (want 32,240,118) -> FAIL
+  gbm_bo_map(WRITE)+fill+unmap on default(compositor mods) ok (map stride=11520, 3.06 ms)
+  cached-surface aliasing: after CPU rewrite top=16,128,128 bottom=16,128,128 hash 529fd877b5efd073 -> 3ca769304fb4de33 -> FAIL
+gbm alloc only-0x100000000000001       XR24 2880x1800 -> modifier 0x0100000000000001 I915_X_TILED, planes=1 [p0 stride=11776 offset=0] dmabuf size=23068672
+  gbm_bo_map(WRITE)+fill+unmap on only-0x100000000000001 ok (map stride=11776, 14.95 ms)
+  VA import only-0x100000000000001 (DRM XR24 mod I915_X_TILED) as VA_FOURCC_BGRX: success (no error) (0) [0.070 ms wall, 0.071 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000001 (DRM XR24 mod I915_X_TILED) as VA_FOURCC_XRGB: success (no error) (0) [0.017 ms wall, 0.019 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000001 (DRM XR24 mod I915_X_TILED) as VA_FOURCC_BGRA: success (no error) (0) [0.055 ms wall, 0.059 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import only-0x100000000000001 (DRM XR24 mod I915_X_TILED) as VA_FOURCC_ARGB: success (no error) (0) [0.053 ms wall, 0.058 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,450)=0,0,255,255 (1440,1350)=255,0,0,255
+  synthetic VPP: top=63,102,240 (want 63,102,240) bottom=32,240,118 (want 32,240,118) -> PASS
+  gbm_bo_map(WRITE)+fill+unmap on only-0x100000000000001 ok (map stride=11776, 9.75 ms)
+  cached-surface aliasing: after CPU rewrite top=32,240,118 bottom=63,102,240 hash 3816020793571083 -> 9d963ecffdf31083 -> PASS (surface aliases bo memory)
+gbm alloc only-0x100000000000009       XR24 2880x1800 -> modifier 0x0100000000000009 I915_4_TILED, planes=1 [p0 stride=11520 offset=0] dmabuf size=23068672
+  gbm_bo_map(WRITE)+fill+unmap on only-0x100000000000009 ok (map stride=11520, 9.68 ms)
+  VA import only-0x100000000000009 (DRM XR24 mod I915_4_TILED) as VA_FOURCC_BGRX: success (no error) (0) [0.045 ms wall, 0.046 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000009 (DRM XR24 mod I915_4_TILED) as VA_FOURCC_XRGB: success (no error) (0) [0.022 ms wall, 0.023 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000009 (DRM XR24 mod I915_4_TILED) as VA_FOURCC_BGRA: success (no error) (0) [0.019 ms wall, 0.021 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import only-0x100000000000009 (DRM XR24 mod I915_4_TILED) as VA_FOURCC_ARGB: success (no error) (0) [0.021 ms wall, 0.023 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,450)=0,0,255,255 (1440,1350)=255,0,0,255
+  synthetic VPP: top=63,102,240 (want 63,102,240) bottom=32,240,118 (want 32,240,118) -> PASS
+  gbm_bo_map(WRITE)+fill+unmap on only-0x100000000000009 ok (map stride=11520, 4.35 ms)
+  cached-surface aliasing: after CPU rewrite top=32,240,118 bottom=63,102,240 hash 3816020793571083 -> 9d963ecffdf31083 -> PASS (surface aliases bo memory)
+gbm alloc only-0x100000000000010       XR24 2880x1800 -> modifier 0x0100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed), planes=1 [p0 stride=11520 offset=0] dmabuf size=23068672
+  gbm_bo_map(WRITE)+fill+unmap on only-0x100000000000010 ok (map stride=11520, 3.22 ms)
+  VA import only-0x100000000000010 (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_BGRX: success (no error) (0) [0.076 ms wall, 0.078 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000010 (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_XRGB: success (no error) (0) [0.040 ms wall, 0.042 ms CPU] derived image fourcc=XRGB VPP:success (no error)
+  VA import only-0x100000000000010 (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_BGRA: success (no error) (0) [0.022 ms wall, 0.024 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  VA import only-0x100000000000010 (DRM XR24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_ARGB: success (no error) (0) [0.019 ms wall, 0.021 ms CPU] derived image fourcc=ARGB VPP:success (no error)
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,450)=0,0,255,255 (1440,1350)=255,0,0,255
+  synthetic VPP: top=16,128,128 (want 63,102,240) bottom=16,128,128 (want 32,240,118) -> FAIL
+  gbm_bo_map(WRITE)+fill+unmap on only-0x100000000000010 ok (map stride=11520, 2.81 ms)
+  cached-surface aliasing: after CPU rewrite top=16,128,128 bottom=16,128,128 hash 529fd877b5efd073 -> 3ca769304fb4de33 -> FAIL
+gbm alloc linear                       XB24 2880x1800 -> modifier 0x0000000000000000 LINEAR, planes=1 [p0 stride=11520 offset=0] dmabuf size=20971520
+  gbm_bo_map(WRITE)+fill+unmap on linear ok (map stride=11520, 7.57 ms)
+  VA import linear (DRM XB24 mod LINEAR) as VA_FOURCC_RGBX: success (no error) (0) [0.030 ms wall, 0.031 ms CPU] derived image fourcc=XBGR VPP:success (no error)
+  VA import linear (DRM XB24 mod LINEAR) as VA_FOURCC_XBGR: success (no error) (0) [0.017 ms wall, 0.019 ms CPU] derived image fourcc=XBGR VPP:success (no error)
+  VA import linear (DRM XB24 mod LINEAR) as VA_FOURCC_RGBA: success (no error) (0) [0.014 ms wall, 0.016 ms CPU] derived image fourcc=RGBA VPP:success (no error)
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,450)=255,0,0,255 (1440,1350)=0,0,255,255
+  synthetic VPP: top=63,102,240 (want 63,102,240) bottom=32,240,118 (want 32,240,118) -> PASS
+  gbm_bo_map(WRITE)+fill+unmap on linear ok (map stride=11520, 2.23 ms)
+  cached-surface aliasing: after CPU rewrite top=32,240,118 bottom=63,102,240 hash 3816020793571083 -> 9d963ecffdf31083 -> PASS (surface aliases bo memory)
+gbm alloc default(compositor mods)     XB24 2880x1800 -> modifier 0x0100000000000010 I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed), planes=1 [p0 stride=11520 offset=0] dmabuf size=23068672
+  gbm_bo_map(WRITE)+fill+unmap on default(compositor mods) ok (map stride=11520, 2.98 ms)
+  VA import default(compositor mods) (DRM XB24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_RGBX: success (no error) (0) [0.045 ms wall, 0.047 ms CPU] derived image fourcc=XBGR VPP:success (no error)
+  VA import default(compositor mods) (DRM XB24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_XBGR: success (no error) (0) [0.022 ms wall, 0.024 ms CPU] derived image fourcc=XBGR VPP:success (no error)
+  VA import default(compositor mods) (DRM XB24 mod I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed)) as VA_FOURCC_RGBA: success (no error) (0) [0.056 ms wall, 0.060 ms CPU] derived image fourcc=RGBA VPP:success (no error)
+  gbm_bo_map(READ) cross-check, bytes B,G,R,X: (1440,450)=255,0,0,255 (1440,1350)=0,0,255,255
+  synthetic VPP: top=16,128,128 (want 63,102,240) bottom=16,128,128 (want 32,240,118) -> FAIL
+  gbm_bo_map(WRITE)+fill+unmap on default(compositor mods) ok (map stride=11520, 5.52 ms)
+  cached-surface aliasing: after CPU rewrite top=16,128,128 bottom=16,128,128 hash 1b2728a3723c350b -> 1eaae722619de30b -> FAIL
+
+=== Q6: timing and surface reuse across captures ===
+-- default(all compositor mods) (I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed))
+  fresh import (gbm_bo_get_fd + lseek + vaCreateSurfaces DRM_PRIME_2 + close): 0.004 ms wall, 0.005 ms CPU per import (N=50)
+  VPP from cached surface, submit+sync: 3.723 ms wall, 0.244 ms CPU per frame
+  VPP submit only (no sync, pipelined): 0.213 ms CPU per frame, 2.548 ms wall per frame incl. final sync
+  capture default(all compositor mods): READY in 6.35 ms (presentation_time->ready 3.73 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 553.12 ms (presentation_time->ready 3.92 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 602.10 ms (presentation_time->ready 4.25 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 598.22 ms (presentation_time->ready 2.13 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 597.79 ms (presentation_time->ready 1.44 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 599.07 ms (presentation_time->ready 1.19 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 601.55 ms (presentation_time->ready 1.74 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 601.26 ms (presentation_time->ready 2.17 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 599.57 ms (presentation_time->ready 2.17 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 600.71 ms (presentation_time->ready 2.40 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture->ready over 10 repeated captures: avg 535.97 ms
+-- default-minus-CCS (I915_4_TILED)
+  fresh import (gbm_bo_get_fd + lseek + vaCreateSurfaces DRM_PRIME_2 + close): 0.005 ms wall, 0.005 ms CPU per import (N=50)
+  VPP from cached surface, submit+sync: 3.514 ms wall, 0.720 ms CPU per frame
+  VPP submit only (no sync, pipelined): 0.199 ms CPU per frame, 2.511 ms wall per frame incl. final sync
+  capture default-minus-CCS: READY in 296.17 ms (presentation_time->ready 2.51 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 599.02 ms (presentation_time->ready 4.16 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 13.31 ms (presentation_time->ready 3.12 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 588.86 ms (presentation_time->ready 3.05 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 600.07 ms (presentation_time->ready 2.56 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 600.97 ms (presentation_time->ready 3.18 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 594.48 ms (presentation_time->ready 1.73 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 451.31 ms (presentation_time->ready 2.26 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 150.52 ms (presentation_time->ready 2.44 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 111.98 ms (presentation_time->ready 2.77 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture->ready over 10 repeated captures: avg 400.67 ms
+-- linear-only (LINEAR)
+  fresh import (gbm_bo_get_fd + lseek + vaCreateSurfaces DRM_PRIME_2 + close): 0.003 ms wall, 0.003 ms CPU per import (N=50)
+  VPP from cached surface, submit+sync: 5.038 ms wall, 0.493 ms CPU per frame
+  VPP submit only (no sync, pipelined): 0.321 ms CPU per frame, 3.847 ms wall per frame incl. final sync
+  capture linear-only: READY in 48.23 ms (presentation_time->ready 5.41 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 386.89 ms (presentation_time->ready 5.70 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 211.36 ms (presentation_time->ready 4.73 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 598.89 ms (presentation_time->ready 4.75 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 190.64 ms (presentation_time->ready 4.85 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 411.83 ms (presentation_time->ready 5.14 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 584.83 ms (presentation_time->ready 4.54 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 17.01 ms (presentation_time->ready 4.50 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 595.17 ms (presentation_time->ready 4.79 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 390.44 ms (presentation_time->ready 5.00 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture->ready over 10 repeated captures: avg 343.53 ms
+-- only-0x100000000000001 (I915_X_TILED)
+  fresh import (gbm_bo_get_fd + lseek + vaCreateSurfaces DRM_PRIME_2 + close): 0.003 ms wall, 0.004 ms CPU per import (N=50)
+  VPP from cached surface, submit+sync: 5.053 ms wall, 0.588 ms CPU per frame
+  VPP submit only (no sync, pipelined): 0.346 ms CPU per frame, 4.072 ms wall per frame incl. final sync
+  capture only-0x100000000000001: READY in 4.34 ms (presentation_time->ready 2.66 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 348.07 ms (presentation_time->ready 2.88 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 192.32 ms (presentation_time->ready 2.71 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 406.01 ms (presentation_time->ready 2.54 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 589.32 ms (presentation_time->ready 2.43 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 13.73 ms (presentation_time->ready 2.72 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 598.07 ms (presentation_time->ready 3.38 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 388.64 ms (presentation_time->ready 2.96 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 207.26 ms (presentation_time->ready 1.72 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 605.18 ms (presentation_time->ready 3.49 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture->ready over 10 repeated captures: avg 335.29 ms
+-- only-0x100000000000009 (I915_4_TILED)
+  fresh import (gbm_bo_get_fd + lseek + vaCreateSurfaces DRM_PRIME_2 + close): 0.004 ms wall, 0.005 ms CPU per import (N=50)
+  VPP from cached surface, submit+sync: 3.332 ms wall, 0.351 ms CPU per frame
+  VPP submit only (no sync, pipelined): 0.163 ms CPU per frame, 2.439 ms wall per frame incl. final sync
+  capture only-0x100000000000009: READY in 4.12 ms (presentation_time->ready 2.22 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 304.53 ms (presentation_time->ready 2.42 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 579.53 ms (presentation_time->ready 1.69 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 20.43 ms (presentation_time->ready 1.72 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 598.16 ms (presentation_time->ready 2.21 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 392.85 ms (presentation_time->ready 3.17 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 208.79 ms (presentation_time->ready 3.19 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 597.60 ms (presentation_time->ready 2.51 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 193.29 ms (presentation_time->ready 2.91 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 409.38 ms (presentation_time->ready 3.07 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture->ready over 10 repeated captures: avg 330.87 ms
+-- only-0x100000000000010 (I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed))
+  fresh import (gbm_bo_get_fd + lseek + vaCreateSurfaces DRM_PRIME_2 + close): 0.005 ms wall, 0.006 ms CPU per import (N=50)
+  VPP from cached surface, submit+sync: 3.586 ms wall, 0.531 ms CPU per frame
+  VPP submit only (no sync, pipelined): 0.292 ms CPU per frame, 2.540 ms wall per frame incl. final sync
+  capture only-0x100000000000010: READY in 281.68 ms (presentation_time->ready 2.40 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 13.98 ms (presentation_time->ready 2.53 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 594.37 ms (presentation_time->ready 2.45 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 386.00 ms (presentation_time->ready 1.44 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 214.30 ms (presentation_time->ready 1.54 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 600.12 ms (presentation_time->ready 1.70 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 190.73 ms (presentation_time->ready 1.61 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 408.29 ms (presentation_time->ready 1.58 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 589.73 ms (presentation_time->ready 2.24 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 13.11 ms (presentation_time->ready 1.69 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture->ready over 10 repeated captures: avg 329.23 ms
+
+-- reuse across captures on default-minus-CCS: cached VA surface, CPU overwrite, then capture into the same bo
+  capture default-minus-CCS: READY in 598.97 ms (presentation_time->ready 3.26 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  gbm_bo_map(WRITE)+fill+unmap on default-minus-CCS ok (map stride=11520, 13.71 ms)
+  after CPU fill red/blue: centre=32,240,118 hash=3816020793571083
+  capture default-minus-CCS: READY in 304.30 ms (presentation_time->ready 2.27 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture #1 hash=f2f23e88ea1a9e1d; CPU-fill hash=3816020793571083; capture #2 (same bo, cached surface) hash=ca116945d3e8172a
+  fresh import of same bo after capture #2 hash=ca116945d3e8172a -> identical to cached surface output
+  waiting 3 s for screen content (bar clock/cursor) to change...
+  capture default-minus-CCS: READY in 6.72 ms (presentation_time->ready 5.20 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture #3 (+3 s) hash=099324406218083d -> changed
+
+=== Q7: implicit fence probe after ready ===
+  capture default(all compositor mods): READY in 104.63 ms (presentation_time->ready 4.30 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 600.04 ms (presentation_time->ready 4.50 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 185.94 ms (presentation_time->ready 1.69 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 413.92 ms (presentation_time->ready 2.54 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 587.06 ms (presentation_time->ready 2.32 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 13.20 ms (presentation_time->ready 1.66 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 597.60 ms (presentation_time->ready 2.27 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 387.85 ms (presentation_time->ready 1.62 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 210.57 ms (presentation_time->ready 1.54 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default(all compositor mods): READY in 601.06 ms (presentation_time->ready 2.09 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  default(all compositor mods): after ready: unsignalled=0 none=10 err=0; later SYNC_WRITE probe: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 191.57 ms (presentation_time->ready 2.25 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 407.66 ms (presentation_time->ready 2.62 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 586.54 ms (presentation_time->ready 2.35 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 14.61 ms (presentation_time->ready 2.87 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 598.79 ms (presentation_time->ready 2.46 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 386.69 ms (presentation_time->ready 2.35 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 214.40 ms (presentation_time->ready 2.65 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 596.56 ms (presentation_time->ready 1.94 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 189.56 ms (presentation_time->ready 1.72 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture default-minus-CCS: READY in 411.34 ms (presentation_time->ready 2.21 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  default-minus-CCS: after ready: unsignalled=0 none=10 err=0; later SYNC_WRITE probe: no pending fence (signalled/none)
+  capture linear-only: READY in 584.70 ms (presentation_time->ready 7.56 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 32.78 ms (presentation_time->ready 8.58 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 9.04 ms (presentation_time->ready 7.45 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 576.33 ms (presentation_time->ready 5.55 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 388.34 ms (presentation_time->ready 5.39 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 211.07 ms (presentation_time->ready 4.88 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 599.46 ms (presentation_time->ready 5.00 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 193.07 ms (presentation_time->ready 5.60 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 408.18 ms (presentation_time->ready 5.87 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture linear-only: READY in 587.41 ms (presentation_time->ready 5.48 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  linear-only: after ready: unsignalled=0 none=10 err=0; later SYNC_WRITE probe: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 10.11 ms (presentation_time->ready 2.65 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 595.65 ms (presentation_time->ready 1.90 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 391.22 ms (presentation_time->ready 2.52 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 211.43 ms (presentation_time->ready 2.55 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 599.50 ms (presentation_time->ready 2.34 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 190.62 ms (presentation_time->ready 2.36 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 406.39 ms (presentation_time->ready 1.78 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 590.05 ms (presentation_time->ready 3.35 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 13.10 ms (presentation_time->ready 2.80 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000001: READY in 600.41 ms (presentation_time->ready 2.86 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  only-0x100000000000001: after ready: unsignalled=0 none=10 err=0; later SYNC_WRITE probe: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 386.58 ms (presentation_time->ready 3.44 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 213.48 ms (presentation_time->ready 2.58 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 600.82 ms (presentation_time->ready 3.24 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 184.86 ms (presentation_time->ready 3.10 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 410.23 ms (presentation_time->ready 1.80 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 591.10 ms (presentation_time->ready 2.84 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 12.46 ms (presentation_time->ready 2.32 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 598.65 ms (presentation_time->ready 2.41 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 390.51 ms (presentation_time->ready 3.47 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000009: READY in 211.22 ms (presentation_time->ready 3.35 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  only-0x100000000000009: after ready: unsignalled=0 none=10 err=0; later SYNC_WRITE probe: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 598.97 ms (presentation_time->ready 2.20 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 186.04 ms (presentation_time->ready 2.09 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 410.97 ms (presentation_time->ready 1.59 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 589.83 ms (presentation_time->ready 2.11 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 13.46 ms (presentation_time->ready 1.77 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 597.03 ms (presentation_time->ready 1.68 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 387.52 ms (presentation_time->ready 1.55 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 213.87 ms (presentation_time->ready 2.53 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 599.12 ms (presentation_time->ready 1.55 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  capture only-0x100000000000010: READY in 187.79 ms (presentation_time->ready 2.19 ms; damage rects=1, transform=0); implicit fence right after ready: no pending fence (signalled/none)
+  only-0x100000000000010: after ready: unsignalled=0 none=10 err=0; later SYNC_WRITE probe: no pending fence (signalled/none)
+
+================ SUMMARY ================
+Q1 events (eDP-1): shm_format dmabuf_format shm_format dmabuf_format dmabuf_device buffer_size done
+   size 2880x1800, 2 shm fmts, dmabuf_device 226:128 -> /dev/dri/renderD128, 2 dmabuf fmts
+   AR24: 0x0 0x100000000000001 0x100000000000009 0x100000000000010 0xffffffffffffff
+   XR24: 0x0 0x100000000000001 0x100000000000009 0x100000000000010 0xffffffffffffff
+capture default(all compositor mods) mod=I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed) ready 6.8ms (pres->ready 4.8ms), fence after ready:none/signalled; VA import OK as BGRX, VPP output ALL BLACK (wrong; see gbm cross-check)
+capture default-minus-CCS            mod=I915_4_TILED                             ready 5.2ms (pres->ready 4.1ms), fence after ready:none/signalled; VA import OK as BGRX, VPP output matches screen
+capture linear-only                  mod=LINEAR                                   ready 488.5ms (pres->ready 7.6ms), fence after ready:none/signalled; VA import OK as BGRX, VPP output matches screen
+capture only-0x100000000000001       mod=I915_X_TILED                             ready 528.6ms (pres->ready 4.5ms), fence after ready:none/signalled; VA import OK as BGRX, VPP output matches screen
+capture only-0x100000000000009       mod=I915_4_TILED                             ready 530.7ms (pres->ready 2.5ms), fence after ready:none/signalled; VA import OK as BGRX, VPP output matches screen
+capture only-0x100000000000010       mod=I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed) ready 520.2ms (pres->ready 1.3ms), fence after ready:none/signalled; VA import OK as BGRX, VPP output ALL BLACK (wrong; see gbm cross-check)
+synthetic linear                         DRM XR24 mod=LINEAR                 VA BGRX: red 63,102,240 blue 32,240,118 PASS; reuse-after-rewrite PASS
+synthetic default(compositor mods)       DRM XR24 mod=I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed) VA BGRX: red 16,128,128 blue 16,128,128 FAIL; reuse-after-rewrite FAIL
+synthetic only-0x100000000000001         DRM XR24 mod=I915_X_TILED           VA BGRX: red 63,102,240 blue 32,240,118 PASS; reuse-after-rewrite PASS
+synthetic only-0x100000000000009         DRM XR24 mod=I915_4_TILED           VA BGRX: red 63,102,240 blue 32,240,118 PASS; reuse-after-rewrite PASS
+synthetic only-0x100000000000010         DRM XR24 mod=I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed) VA BGRX: red 16,128,128 blue 16,128,128 FAIL; reuse-after-rewrite FAIL
+synthetic linear                         DRM XB24 mod=LINEAR                 VA RGBX: red 63,102,240 blue 32,240,118 PASS; reuse-after-rewrite PASS
+synthetic default(compositor mods)       DRM XB24 mod=I915_4_TILED_LNL_CCS (Xe2 flat-CCS compressed) VA RGBX: red 16,128,128 blue 16,128,128 FAIL; reuse-after-rewrite FAIL
+timing default(all compositor mods) fresh import 0.005 ms CPU, VPP submit+sync 3.723 ms wall / 0.244 ms CPU, submit-only 0.213 ms CPU; capture->ready avg 535.97 ms (10/10)
+timing default-minus-CCS            fresh import 0.005 ms CPU, VPP submit+sync 3.514 ms wall / 0.720 ms CPU, submit-only 0.199 ms CPU; capture->ready avg 400.67 ms (10/10)
+timing linear-only                  fresh import 0.003 ms CPU, VPP submit+sync 5.038 ms wall / 0.493 ms CPU, submit-only 0.321 ms CPU; capture->ready avg 343.53 ms (10/10)
+timing only-0x100000000000001       fresh import 0.004 ms CPU, VPP submit+sync 5.053 ms wall / 0.588 ms CPU, submit-only 0.346 ms CPU; capture->ready avg 335.29 ms (10/10)
+timing only-0x100000000000009       fresh import 0.005 ms CPU, VPP submit+sync 3.332 ms wall / 0.351 ms CPU, submit-only 0.163 ms CPU; capture->ready avg 330.87 ms (10/10)
+timing only-0x100000000000010       fresh import 0.006 ms CPU, VPP submit+sync 3.586 ms wall / 0.531 ms CPU, submit-only 0.292 ms CPU; capture->ready avg 329.23 ms (10/10)
+reuse (default-minus-CCS): cached VA surface reflects new content after CPU write and after re-capture into same bo: YES; capture 3 s later changed
+sync default(all compositor mods): fence at ready unsignalled 0/10, none 10/10, err 0
+sync default-minus-CCS           : fence at ready unsignalled 0/10, none 10/10, err 0
+sync linear-only                 : fence at ready unsignalled 0/10, none 10/10, err 0
+sync only-0x100000000000001      : fence at ready unsignalled 0/10, none 10/10, err 0
+sync only-0x100000000000009      : fence at ready unsignalled 0/10, none 10/10, err 0
+sync only-0x100000000000010      : fence at ready unsignalled 0/10, none 10/10, err 0

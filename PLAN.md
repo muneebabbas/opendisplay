@@ -11,19 +11,20 @@ something is genuinely useful (see "Upstreaming" below).
 Move the whole video path onto the GPU: capture -> colour conversion ->
 encode, with the CPU only handling the compressed stream.
 
-| Target | x264 | VA-API, stage A (CPU convert) | VA-API, M2 (GPU convert) | Goal |
-|---|---|---|---|---|
-| Sender CPU, 60 fps full-motion video | 3.08 cores | 2.16 cores | **0.33 cores** | **< 0.3 cores** |
-| Sender CPU, fast scrolling | 2.43 cores | 1.67 cores | **0.15 cores** | **< 0.2 cores** |
-| End-to-end latency p50 (iPad), video | 30 ms | 44 ms | **28 ms** | **<= x264** |
-| fps under full motion | 59.5 | 46 | **59** | **60**, later **120** |
-| Colours | exact BT.709 | exact BT.709 | exact BT.709 (tests) | **exact BT.709** (flat-patch test) |
-| Battery draw, scroll / video (idle ~6.6 W) | 18.9 / 14.4 W | 17.1 / 14.1 W | 15.0 / 13.4 W | measured, clearly lower |
-| Bits at equal quality, HEVC vs H.264 (M3) | | | BD-rate -31% code scroll, -17% video | **lower** |
+| Target | x264 | VA-API, stage A (CPU convert) | VA-API, M2 (GPU convert) | VA-API HEVC, M4 (zero-copy) | Goal |
+|---|---|---|---|---|---|
+| Sender CPU, 60 fps full-motion video | 3.08 cores | 2.16 cores | 0.33 cores | **0.22-0.25 cores** | **< 0.3 cores** |
+| Sender CPU, fast scrolling | 2.43 cores | 1.67 cores | 0.15 cores | **0.08 cores** | **< 0.2 cores** |
+| End-to-end latency p50 (iPad), video | 30 ms | 44 ms | 28 ms | **29 ms** (M3 27.5-29) | **<= x264** |
+| fps under full motion | 59.5 | 46 | 59 | **59**; 115 at 120 Hz (local, H.264) | **60**, later **120** |
+| Colours | exact BT.709 | exact BT.709 | exact BT.709 (tests) | exact BT.709 (tests, dmabuf too) | **exact BT.709** (flat-patch test) |
+| Battery draw, scroll / video (idle ~6.6 W) | 18.9 / 14.4 W | 17.1 / 14.1 W | 15.0 / 13.4 W | no difference readable vs M3 | measured, clearly lower |
+| Bits at equal quality, HEVC vs H.264 (M3) | | | BD-rate -31% code scroll, -17% video | | **lower** |
 
 Numbers (2026-11-10, iPad over Wi-Fi, 30 s windows, on battery): x264 and M2 from
 `results/2026-11-10-wifi-m2-final/` (two passes, consistent); stage A from
-`results/2026-11-10-wifi-m1/`. Battery `power_now` is noisy (the idle baseline
+`results/2026-11-10-wifi-m1/`; M4 (HEVC) from `results/2026-11-10-wifi-m4/`
+(two passes against the M3 binary). Battery `power_now` is noisy (the idle baseline
 moved 6.6 -> 9.8 W between passes): treat it as indicative only. Method in
 `research/vaapi-encode.md`.
 
@@ -97,12 +98,26 @@ Branch `linux/hevc` (3 commits on `linux/vaapi-gpu-convert`), fork draft PR #3.
   at QVBR 21, while the synthetic flood hits the 35M cap: the live content is
   much easier than the synthetic one; not investigated.
 
-### M4 Zero-copy capture (stage B)
-Branch `linux/dmabuf-capture`, on M2.
+### M4 Zero-copy capture (stage B) (done, 2026-11-10)
+Branch `linux/dmabuf-capture`, on `linux/hevc`; draft PR #4.
 * Capture into dmabufs (`ext-image-copy-capture` dmabuf constraints, gbm),
   import as VA surfaces, convert and encode without touching the CPU.
   Fallback to shm. Cursor, modifiers and Hyprland quirks are the risks.
 * Done when: CPU per frame ~0.5-1 ms; this is what makes 120 fps realistic.
+* **Result** (`research/vaapi-encode.md` "M4: zero-copy capture",
+  `results/2026-11-10-wifi-m4/`): GPU buffers XR24 I915_4_TILED on Hyprland
+  0.57; CPU 0.077 cores scroll (M3 0.155), 0.23 video (M3 0.35); encode p50
+  2-3 ms shorter; e2e at or below M3; 59 fps; exact BT.709 (tests through
+  dmabufs); fallback to shm verified (`OD_FAIL_DMABUF_IMPORT=1`, debug).
+* **Per-frame CPU:** the pixel path (capture -> import -> VPP submit) is now
+  ~1 ms; the whole process is 1.3 ms/frame scrolling, 3.9 ms/frame on video,
+  where the rest is the iHD encoder's own submit (~1.4 ms), timer interrupts,
+  the bitstream copy (scales with bitrate) and od's NAL parsing (perf). So the
+  0.5-1 ms target holds for the capture/convert part, not for the whole process.
+* **Trap found:** iHD imports `I915_4_TILED_LNL_CCS` (gbm's default pick)
+  without error and outputs black; modifiers go through an allowlist.
+* Not done: dmabufs over wlr-screencopy (Hyprland < 0.57) and PipeWire
+  (KDE/GNOME); AMD untested (LINEAR only there).
 
 ### M5 120 fps (stretch)
 * The iPad app caps H.264 and HEVC at 60 fps (`Shared/StreamReceiver.swift`
@@ -112,6 +127,10 @@ Branch `linux/dmabuf-capture`, on M2.
   against `od-receiver` on the desktop (144 Hz monitor) first.
 * Risk: encode must take < 8.3 ms per frame; the media engine runs at
   400 MHz under today's load (~15-20 ms). Check that it clocks up at 120 fps.
+  **Checked in M4** (`results/2026-11-10-m5-120fps-local/`): with dmabuf
+  capture the media GT goes to 1200 MHz at 120 Hz and H.264 2388x1668
+  encodes in 7.0-7.5 ms p50, 8.0-8.2 ms p95 (115 fps sent); with shm capture
+  it stays at 0-500 MHz and reaches ~50 fps. HEVC at 120 still unmeasured.
 
 ## Parked (written down, not planned)
 

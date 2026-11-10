@@ -167,18 +167,25 @@ def idle_baseline():
 
 
 def run(encoder, workload):
-    log_path = os.path.join(outdir, f"tx-{encoder}-{workload}.log")
-    log = open(log_path, "w")
     # Variants: `vaapi-h264` forces H.264 on VA-API (OD_FORCE_H264=1), `vaapi-hevc`
-    # is plain VA-API (HEVC when the receiver offers it). Others are --encoder values.
-    name, env = encoder, dict(os.environ)
-    if encoder == "vaapi-h264":
+    # is plain VA-API (HEVC when the receiver offers it), `vaapi-hevc-shm` is that
+    # with shared-memory capture (OD_VAAPI_SHM_CAPTURE=1, the M3 path). Others are
+    # --encoder values. `<variant>@<binary>` runs another od-sender build (e.g. M3).
+    variant, _, binary = encoder.partition("@")
+    binary = binary or sender
+    name, env = variant, dict(os.environ)
+    env.pop("OD_FORCE_H264", None)
+    env.pop("OD_VAAPI_SHM_CAPTURE", None)
+    if variant == "vaapi-h264":
         name, env["OD_FORCE_H264"] = "vaapi", "1"
-    elif encoder == "vaapi-hevc":
+    elif variant == "vaapi-hevc":
         name = "vaapi"
-        env.pop("OD_FORCE_H264", None)
+    elif variant == "vaapi-hevc-shm":
+        name, env["OD_VAAPI_SHM_CAPTURE"] = "vaapi", "1"
+    log_path = os.path.join(outdir, f"tx-{variant}{'-' + os.path.basename(binary) if binary != sender else ''}-{workload}.log")
+    log = open(log_path, "w")
     p = subprocess.Popen(
-        [sender, "run", f"--to={target}", f"--encoder={name}", f"--workspace={WS}"],
+        [binary, "run", f"--to={target}", f"--encoder={name}", f"--workspace={WS}"],
         stdout=log, stderr=subprocess.STDOUT, env=env)
     # Wait until the session is up.
     t0 = time.time()
