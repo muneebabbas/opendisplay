@@ -5,6 +5,7 @@ mod desktop;
 mod dev;
 mod disconnect;
 mod discover;
+mod dmabuf;
 mod doctor;
 mod encoder;
 mod latest;

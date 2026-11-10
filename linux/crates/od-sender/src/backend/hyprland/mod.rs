@@ -147,7 +147,9 @@ impl Backend for HyprlandBackend {
             // crashes Hyprland once its output is removed (fixed upstream
             // after 0.56.2 by 8010b4e5c). The cursor stays in the video.
             cursor_metadata: false,
-            dmabuf: false,
+            // GPU buffers for the VA-API encoder over ext-image-copy-capture
+            // (wayland/capture.rs); wlr-screencopy stays in shared memory.
+            dmabuf: self.capture == CapturePath::Ext,
             resize_in_place: true,
             creates_outputs: true,
         }

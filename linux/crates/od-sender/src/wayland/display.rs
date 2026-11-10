@@ -96,7 +96,7 @@ impl<O: OutputControl> VirtualDisplay for CapturedDisplay<O> {
         let shared = Arc::new(Mutex::new(sink));
         self.capture = Some(spawn_frames(
             &self.output.info().name,
-            opts,
+            opts.clone(),
             self.capture_path,
             &shared,
         )?);
@@ -114,10 +114,13 @@ impl<O: OutputControl> VirtualDisplay for CapturedDisplay<O> {
         if let Some(mut c) = self.capture.take() {
             c.stop();
         }
-        let opts = CaptureOptions { cursor: painted };
+        let opts = CaptureOptions {
+            cursor: painted,
+            ..opts
+        };
         self.capture = Some(spawn_frames(
             &self.output.info().name,
-            opts,
+            opts.clone(),
             self.capture_path,
             &shared,
         )?);
