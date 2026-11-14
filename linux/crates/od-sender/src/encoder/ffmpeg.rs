@@ -448,23 +448,40 @@ fn pick_format(codec: &ff::Codec, kind: Kind) -> Pixel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoder::Backend;
+    use crate::backend::{Frame, FrameBuf, Pixels};
+    use crate::encoder::{Backend, Encoder};
 
-    /// Opens VA-API, or explains why the test is skipped (no GPU in CI).
+    const SETTINGS: EncoderSettings = EncoderSettings {
+        backend: Backend::Vaapi,
+        bitrate_bps: 8_000_000,
+        max_fps: 60.0,
+        threads: 1,
+    };
+
+    /// The VA-API encoder, or `None` (test skipped) when this machine has
+    /// no way to encode H.264 on VA-API: no `h264_vaapi` in this FFmpeg, no
+    /// VA-API device (CI), or a driver without an H.264 encode entrypoint
+    /// (FFmpeg reports ENOSYS). Any other failure to open is a bug.
     fn vaapi(w: u32, h: u32) -> Option<FfmpegEncoder> {
-        let s = EncoderSettings {
-            backend: Backend::Vaapi,
-            bitrate_bps: 8_000_000,
-            max_fps: 60.0,
-            threads: 1,
-        };
-        match FfmpegEncoder::new(Kind::Vaapi, w, h, s) {
+        match FfmpegEncoder::new(Kind::Vaapi, w, h, SETTINGS) {
             Ok(e) => Some(e),
-            Err(e) => {
-                eprintln!("skipped: VA-API unavailable here ({e:#})");
+            Err(e) if vaapi_missing(&e) => {
+                eprintln!("skipped: no H.264 VA-API encoder here ({e:#})");
                 None
             }
+            Err(e) => panic!("VA-API is present but the encoder failed to open: {e:#}"),
         }
+    }
+
+    fn vaapi_missing(e: &anyhow::Error) -> bool {
+        ff::encoder::find_by_name("h264_vaapi").is_none()
+            || HwFrames::new(64, 64).is_err()
+            || e.chain().any(|c| {
+                c.downcast_ref::<ff::Error>()
+                    == Some(&ff::Error::Other {
+                        errno: ff::util::error::ENOSYS,
+                    })
+            })
     }
 
     /// A moving gradient, so every frame differs.
@@ -510,7 +527,12 @@ mod tests {
                 let mut out = ff::frame::Video::empty();
                 while dec.receive_frame(&mut out).is_ok() {
                     assert_eq!((out.width(), out.height()), (w, h));
+                    assert_eq!(out.color_space(), color::Space::BT709);
                     assert_eq!(out.color_primaries(), color::Primaries::BT709);
+                    assert_eq!(
+                        out.color_transfer_characteristic(),
+                        color::TransferCharacteristic::BT709
+                    );
                     assert_eq!(out.color_range(), color::Range::MPEG);
                     decoded += 1;
                 }
@@ -526,15 +548,33 @@ mod tests {
     }
 
     #[test]
-    fn vaapi_reopens_at_a_new_size() {
-        // A receiver rotation or resize reopens the encoder (session.rs).
-        for (w, h) in [(320, 240), (240, 320), (1194, 834)] {
-            let Some(mut e) = vaapi(w, h) else { return };
-            let (px, stride) = frame(w, h, 0);
-            let units = e
-                .encode(&px, stride, PixelFormat::Xrgb8888, true, Instant::now())
-                .unwrap();
-            assert!(units.first().is_some_and(|u| u.unit.is_idr), "{w}x{h}");
+    fn vaapi_reopens_at_odd_sizes_while_the_old_encoder_is_open() {
+        if vaapi(64, 64).is_none() {
+            return;
         }
+        // A receiver rotation or resize opens the new encoder before the old
+        // one is dropped (session.rs), at the frame's size rounded down to
+        // even.
+        let mut old: Option<Encoder> = None;
+        for (w, h) in [(321, 241), (241, 321), (1195, 835)] {
+            let mut e = Encoder::new(w, h, SETTINGS).unwrap();
+            assert_eq!(e.dimensions(), (w & !1, h & !1));
+            let (px, stride) = frame(w, h, 0);
+            let f = Frame {
+                captured_at: Instant::now(),
+                presentation_ns: None,
+                buf: FrameBuf::Cpu {
+                    pixels: Pixels::Owned(px),
+                    width: w,
+                    height: h,
+                    stride,
+                    format: PixelFormat::Xrgb8888,
+                },
+            };
+            let units = e.encode(&f, true).unwrap();
+            assert!(units.first().is_some_and(|u| u.unit.is_idr), "{w}x{h}");
+            old = Some(e);
+        }
+        drop(old);
     }
 }
