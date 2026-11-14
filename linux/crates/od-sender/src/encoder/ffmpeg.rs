@@ -19,7 +19,7 @@ use ff::format::Pixel;
 use ff::util::color;
 use ffmpeg_next as ff;
 use opendisplay_proto::video::{AccessUnit, NalType, access_units, nal_units};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::convert::{Converter, band_count};
 use super::stage::{YuvFrame, new_video};
@@ -131,8 +131,13 @@ pub struct FfmpegEncoder {
     /// encoder may return a packet one call late.
     in_flight: VecDeque<(i64, Instant, Instant)>,
     /// Parameter sets from the last IDR, prepended to any IDR that arrives
-    /// without them (§5.1). x264 repeats them itself; V4L2 drivers vary.
+    /// without them (§5.1). x264 repeats them itself; V4L2 and VA-API
+    /// drivers vary.
     param_sets: Vec<u8>,
+    /// An IDR without SPS/PPS before any were seen was dropped and logged;
+    /// later drops log at debug so a driver that never sends them in-band
+    /// does not warn on every frame.
+    warned_no_sets: bool,
     /// VA-API only: where converted frames are uploaded before encoding.
     /// Declared after `enc` so the codec drops its references first.
     hw: Option<HwFrames>,
@@ -263,6 +268,7 @@ impl FfmpegEncoder {
             pts: 0,
             in_flight: VecDeque::new(),
             param_sets: Vec::new(),
+            warned_no_sets: false,
             hw,
         })
     }
@@ -396,7 +402,14 @@ impl FfmpegEncoder {
             }
             if sets.is_empty() {
                 if self.param_sets.is_empty() {
-                    warn!("encoder: dropped an IDR without SPS/PPS (none seen yet)");
+                    if std::mem::replace(&mut self.warned_no_sets, true) {
+                        debug!("encoder: dropped an IDR without SPS/PPS (none seen yet)");
+                    } else {
+                        warn!(
+                            "encoder: dropped an IDR without SPS/PPS (none seen yet); \
+                             further drops are logged at debug"
+                        );
+                    }
                     return None;
                 }
                 let mut with = self.param_sets.clone();
