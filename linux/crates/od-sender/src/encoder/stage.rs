@@ -26,7 +26,7 @@ use crate::latest;
 
 /// Narrower frames convert in a few ms inside the encode call; a separate
 /// stage only pays off where conversion is a real share of the frame time.
-/// A hardware encoder lowers this to 0 ([`Encoder::stage_min_width`]): its
+/// The VA-API encoder lowers this to 0 ([`Encoder::stage_min_width`]): its
 /// encode call mostly waits on the GPU, so converting the next frame
 /// meanwhile is free at any size.
 pub const MIN_STAGE_WIDTH: u32 = 2560;

@@ -299,8 +299,8 @@ The OpenDisplay Linux sender (`od-sender`) extends a Linux desktop onto any
 OpenDisplay receiver (iPhone, iPad, Android, or a spare Mac) by creating a
 virtual display sized for it. The beta is tested on **Omarchy / Hyprland 0.56
 on Apple silicon (Asahi)**; x86_64 is expected to work. **Sway 1.10+, KDE
-Plasma 6.8+ and GNOME 50+** are experimental. Video is CPU-encoded for now
-(VA-API planned), and the stream is not encrypted, so use a network you trust.
+Plasma 6.8+ and GNOME 50+** are experimental. Video is CPU-encoded by default
+(VA-API is an opt-in, see the Linux README), and the stream is not encrypted, so use a network you trust.
 
 Install it from the
 [latest release](https://github.com/peetzweg/opendisplay/releases/latest) (Linux ships in every OpenDisplay release, same version as the Mac and iOS apps):
