@@ -26,6 +26,9 @@ use crate::latest;
 
 /// Narrower frames convert in a few ms inside the encode call; a separate
 /// stage only pays off where conversion is a real share of the frame time.
+/// The VA-API encoder lowers this to 0 ([`Encoder::stage_min_width`]): its
+/// encode call mostly waits on the GPU, so converting the next frame
+/// meanwhile is free at any size.
 pub const MIN_STAGE_WIDTH: u32 = 2560;
 /// Converted frames kept for reuse: one in the encoder's slot, one being
 /// encoded, the one kept for an IDR replay, and one being converted.
@@ -78,7 +81,8 @@ pub(super) fn new_video(format: Pixel, width: u32, height: u32) -> ff::frame::Vi
 /// the capture sink.
 #[derive(Clone, Default)]
 pub struct ConvertStage {
-    target: Arc<Mutex<Option<Pixel>>>,
+    /// The bound encoder's format and the narrowest frame worth staging.
+    target: Arc<Mutex<Option<(Pixel, u32)>>>,
 }
 
 impl ConvertStage {
@@ -89,14 +93,17 @@ impl ConvertStage {
     /// Tell the stage what the open encoder takes; call after every
     /// `Encoder::new`.
     pub fn bind(&self, encoder: &Encoder) {
-        *self.target.lock().unwrap_or_else(|e| e.into_inner()) = encoder.yuv_format();
+        *self.target.lock().unwrap_or_else(|e| e.into_inner()) =
+            encoder.yuv_format().map(|f| (f, encoder.stage_min_width()));
     }
 
     fn target_for(&self, frame: &Frame) -> Option<Pixel> {
         let (w, _) = frame.dimensions();
         let is_cpu = matches!(frame.buf, FrameBuf::Cpu { .. });
         let target = *self.target.lock().unwrap_or_else(|e| e.into_inner());
-        target.filter(|_| is_cpu && w >= MIN_STAGE_WIDTH)
+        target
+            .filter(|&(_, min)| is_cpu && w >= min)
+            .map(|(f, _)| f)
     }
 
     /// Wrap the encoder's sink. The returned sink is called on the capture

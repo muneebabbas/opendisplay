@@ -399,7 +399,7 @@ fn pipeline_bench(
     let (raw_tx, raw_rx) = latest::channel::<Frame>();
     let stop = Arc::new(AtomicBool::new(false));
     let enc_stop = stop.clone();
-    let encode = std::thread::spawn(move || -> Result<(Vec<f64>, Vec<f64>, &'static str)> {
+    let encode = std::thread::spawn(move || -> Result<(Vec<f64>, Vec<f64>, &'static str, u32)> {
         let mut enc: Option<encoder::Encoder> = None;
         let mut last: Option<Frame> = None;
         let (mut lat, mut enc_ms) = (Vec::new(), Vec::new());
@@ -426,7 +426,10 @@ fn pipeline_bench(
             }
             last = Some(frame);
         }
-        Ok((lat, enc_ms, enc.map_or("none", |e| e.label())))
+        Ok(match enc {
+            Some(e) => (lat, enc_ms, e.label(), e.stage_min_width()),
+            None => (lat, enc_ms, "none", encoder::MIN_STAGE_WIDTH),
+        })
     });
     let base: crate::backend::FrameSink = Box::new(move |ev| {
         if let CaptureEvent::Frame(f) = ev {
@@ -508,7 +511,7 @@ fn pipeline_bench(
     drop(sink);
     std::thread::sleep(Duration::from_millis(300));
     stop.store(true, Ordering::Relaxed);
-    let (mut lat, mut enc_ms, label) = encode.join().expect("encode thread")?;
+    let (mut lat, mut enc_ms, label, stage_min) = encode.join().expect("encode thread")?;
     lat.sort_by(f64::total_cmp);
     enc_ms.sort_by(f64::total_cmp);
     let p = |v: &[f64], q: f64| {
@@ -519,7 +522,7 @@ fn pipeline_bench(
     info!(
         "{label} {width}x{height} {} {}: {} frames {:.1} fps | capture->encoded p50 {:.1} ms p95 {:.1} ms | encode call p50 {:.1} ms",
         if copy { "copy" } else { "lease" },
-        if use_stage && width >= encoder::MIN_STAGE_WIDTH {
+        if use_stage && width >= stage_min {
             "stage"
         } else {
             "no stage"

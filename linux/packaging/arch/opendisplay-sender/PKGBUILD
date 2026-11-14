@@ -29,6 +29,9 @@ depends=(
 )
 makedepends=('cargo' 'pkgconf' 'clang')  # clang: bindgen for ffmpeg-sys-next
 makedepends_x86_64=('nasm')              # OpenH264's x86 assembly (fallback encoder)
+# The opt-in VA-API encoder (--encoder vaapi) needs the GPU's VA-API driver;
+# mesa already ships AMD's.
+optdepends_x86_64=('intel-media-driver: VA-API encoding on Intel (--encoder vaapi)')
 # No provides=(): it names packages, and nothing depends on one called
 # od-sender (the binary's name).
 options=('!lto')  # cargo profile handles LTO
