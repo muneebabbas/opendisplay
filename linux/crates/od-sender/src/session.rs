@@ -241,7 +241,8 @@ struct EncodePipeline {
     stop: Arc<AtomicBool>,
     force_idr: Arc<AtomicBool>,
     raw_tx: Option<latest::Sender<Frame>>,
-    /// Converts large frames ahead of the encoder (encoder/stage.rs).
+    /// Converts frames ahead of the encoder (encoder/stage.rs): large ones, or
+    /// every frame for VA-API.
     stage: ConvertStage,
     encoded_rx: mpsc::Receiver<Encoded>,
     lost_tx: mpsc::UnboundedSender<String>,

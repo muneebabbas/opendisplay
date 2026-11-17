@@ -140,6 +140,7 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
     println!("\nencoders:");
     for b in [
         encoder::Backend::V4l2m2m,
+        encoder::Backend::Vaapi,
         encoder::Backend::X264,
         encoder::Backend::Openh264,
     ] {
@@ -159,7 +160,7 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
             Err(e) => println!("  {b:?}: unavailable ({e:#})"),
         }
     }
-    println!("  (x264 and OpenH264 encode on the CPU; VA-API is not supported yet)");
+    println!("  (x264 and OpenH264 encode on the CPU; VA-API is opt-in: --encoder vaapi)");
 
     let dir: PathBuf = lock::dir();
     println!("\nlocks: {}", dir.display());

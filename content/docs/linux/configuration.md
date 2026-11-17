@@ -35,7 +35,7 @@ Each key works at the top of `sender.toml` and as a `run` option.
 | `scale` | `passthrough` | `passthrough`, `mac` or a number |
 | `bitrate-mbps` | `20` | Video bitrate in Mbit/s |
 | `max-fps` | `60` | Frame-rate cap |
-| `encoder` | `auto` | `auto`, `v4l2m2m`, `x264` or `openh264` |
+| `encoder` | `auto` | `auto`, `v4l2m2m`, `vaapi`, `x264` or `openh264` |
 | `cursor` | `auto` | `auto`, `video` or `off` (`true` / `false` mean `auto` / `off`) |
 | `capture` | `auto` | `auto`, `ext` or `wlr` |
 | `workspace` | next free one | Workspace name or number (Hyprland and Sway) |
@@ -89,8 +89,11 @@ receiver's decoder advertises them, and never above its panel rate. Lower it
 
 `auto` uses the first encoder that opens, in this order: `v4l2m2m` (a V4L2
 hardware encoder through FFmpeg, where the machine has one), `x264`,
-`openh264`. Naming one forces it. `od-sender doctor` lists which encoders
-open on this machine.
+`openh264`. `vaapi` (GPUs through FFmpeg, tested on Intel; needs the GPU's
+VA-API driver and an FFmpeg built with VA-API) is never chosen by `auto` yet:
+it still converts colours on the CPU and adds some latency, so it only saves
+about a fifth of the sender's CPU. Naming one forces it. `od-sender doctor`
+lists which encoders open on this machine.
 
 ### cursor
 
@@ -165,7 +168,7 @@ position = "auto-right"
 scale = "passthrough"    # "passthrough", "mac" or a number
 bitrate-mbps = 20
 max-fps = 60
-encoder = "auto"         # "auto", "v4l2m2m", "x264" or "openh264"
+encoder = "auto"         # "auto", "v4l2m2m", "vaapi", "x264" or "openh264"
 cursor = "auto"          # "auto", "video" or "off" (true/false: auto/off)
 capture = "auto"         # "auto", "ext" or "wlr"
 workspace = "8"          # Hyprland/Sway: show workspace 8 on the virtual display

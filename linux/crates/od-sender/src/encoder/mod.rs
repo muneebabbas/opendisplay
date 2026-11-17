@@ -1,5 +1,5 @@
 //! H.264 encoding behind one [`Encoder`] shape, with the backend picked at
-//! run time (#360):
+//! run time (#360). `auto` tries, in order:
 //!
 //! 1. `v4l2m2m` — any V4L2 stateful mem2mem encoder through FFmpeg
 //!    (`h264_v4l2m2m`): Raspberry Pi, Rockchip, and Asahi's AVE once a
@@ -10,7 +10,11 @@
 //! 3. `openh264` — compiled in, so it works even where the system FFmpeg was
 //!    built without libx264 (Fedora's `ffmpeg-free`).
 //!
-//! VA-API (Intel/AMD) slots in as another FFmpeg backend ahead of x264.
+//! `vaapi` — Intel/AMD hardware encode through FFmpeg (`h264_vaapi`) — is
+//! opt-in for now: frames are still converted to NV12 on the CPU, which is
+//! most of the sender's CPU time, and at the GPU's power-saving clocks it
+//! adds latency compared with x264. It joins `auto` ahead of x264 once the
+//! conversion moves to the GPU too.
 
 mod convert;
 mod ffmpeg;
@@ -32,9 +36,10 @@ use crate::backend::{Frame, FrameBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Backend {
-    /// First that opens: v4l2m2m, x264, openh264.
+    /// First that opens: v4l2m2m, x264, openh264. `vaapi` is opt-in.
     Auto,
     V4l2m2m,
+    Vaapi,
     X264,
     Openh264,
 }
@@ -51,6 +56,7 @@ impl Backend {
         match self {
             Backend::Auto => "auto",
             Backend::V4l2m2m => "V4L2 M2M (hardware)",
+            Backend::Vaapi => "VA-API (hardware)",
             Backend::X264 => "x264",
             Backend::Openh264 => "OpenH264",
         }
@@ -94,6 +100,7 @@ impl Encoder {
         let order: &[Backend] = match s.backend {
             Backend::Auto => &[Backend::V4l2m2m, Backend::X264, Backend::Openh264],
             Backend::V4l2m2m => &[Backend::V4l2m2m],
+            Backend::Vaapi => &[Backend::Vaapi],
             Backend::X264 => &[Backend::X264],
             Backend::Openh264 => &[Backend::Openh264],
         };
@@ -111,6 +118,8 @@ impl Encoder {
                     ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::V4l2m2m, width, height, s)
                         .map(Imp::Ffmpeg)
                 }
+                Backend::Vaapi => ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::Vaapi, width, height, s)
+                    .map(Imp::Ffmpeg),
                 Backend::X264 => ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::X264, width, height, s)
                     .map(Imp::Ffmpeg),
                 Backend::Openh264 => openh264::OpenH264Encoder::new(width, height, s)
@@ -163,12 +172,21 @@ impl Encoder {
         }
     }
 
+    /// Frames at least this wide are converted by the [`ConvertStage`]
+    /// ahead of the encoder.
+    pub fn stage_min_width(&self) -> u32 {
+        match self.backend {
+            Backend::Vaapi => 0,
+            _ => MIN_STAGE_WIDTH,
+        }
+    }
+
     /// Encode one frame: 4-byte RGB pixels in the capture's byte order
     /// ([`crate::backend::PixelFormat`]), or already converted by a
-    /// [`ConvertStage`]; a dmabuf frame is an error until a VA-API backend
-    /// exists. Returns the pictures the encoder produced, in order: usually
-    /// one, none when it skipped the frame or holds it, two when a lagging
-    /// encoder catches up.
+    /// [`ConvertStage`]; a dmabuf frame is an error until capture can hand
+    /// GPU buffers to the VA-API backend. Returns the pictures the encoder
+    /// produced, in order: usually one, none when it skipped the frame or
+    /// holds it, two when a lagging encoder catches up.
     pub fn encode(&mut self, frame: &Frame, force_idr: bool) -> Result<Vec<Encoded>> {
         match (&frame.buf, &mut self.imp) {
             (
