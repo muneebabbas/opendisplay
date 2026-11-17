@@ -86,11 +86,6 @@ fn codec_name(codec: Codec) -> &'static str {
 /// logs once per size when it does not.
 pub fn can_encode_hevc(width: u32, height: u32) -> bool {
     let (width, height) = (width & !1, height & !1);
-    #[cfg(debug_assertions)]
-    if std::env::var_os("OD_FAIL_HEVC_ENCODER").is_some_and(|v| v == "1") {
-        info!("HEVC encoder unavailable at {width}x{height} (OD_FAIL_HEVC_ENCODER=1); using H.264");
-        return false;
-    }
     static CACHE: OnceLock<Mutex<HashMap<(u32, u32), bool>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(&ok) = cache

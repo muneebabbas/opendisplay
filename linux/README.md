@@ -24,8 +24,7 @@ od-sender is built against an FFmpeg with VA-API, as the Arch package is; the
 release tarball does not have it yet.
 With `--encoder vaapi` the stream is HEVC when the receiver offers it (the
 iPad and Mac apps do) and the GPU can encode it, otherwise H.264. If HEVC
-fails, od-sender falls back to H.264 for the rest of the run;
-`OD_FORCE_H264=1` forces H.264, for comparisons.
+fails, od-sender falls back to H.264 for the rest of the run.
 
 The other direction, a Linux machine as the display, is the
 [Linux receiver](#linux-receiver-beta), also in beta.
@@ -44,7 +43,7 @@ Reports are very welcome ([#299](https://github.com/peetzweg/opendisplay/issues/
 | **Expected to work** | Arch / Omarchy on x86_64. Any distro with Hyprland 0.55+. iPad and Android (Google Play beta) as receivers: Android streamed fine in a first session (Pixel 10a, 53 fps, 33 ms), but touch, scroll, rotation, lock and quit are not checked yet |
 | **Experimental** | **Sway 1.10+**, **KDE Plasma 6.8+** (6.7 and older with the desktop entry in place, see [KDE Plasma](#kde-plasma)), **GNOME 50+** (older GNOME may work, untested). Verified on headless desktops only |
 | **Existing outputs only** | niri, COSMIC, river, labwc, Wayfire and similar: `od-sender run --output <name>` streams an output you created yourself, if the compositor offers the screen-capture and virtual-pointer protocols `od-sender doctor` lists |
-| **Not supported yet** | X11 sessions, Hyprland older than 0.55, Flatpak, SteamOS Gaming Mode, USB cable transport, HEVC, Apple Pencil pressure (mapped to a plain pointer), audio, mirror mode |
+| **Not supported yet** | X11 sessions, Hyprland older than 0.55, Flatpak, SteamOS Gaming Mode, USB cable transport, HEVC without `--encoder vaapi`, Apple Pencil pressure (mapped to a plain pointer), audio, mirror mode |
 
 On an unsupported desktop `od-sender` exits with a message that names what is
 missing.
