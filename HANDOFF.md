@@ -1,6 +1,6 @@
 # Handoff: where to pick up
 
-Last updated 2026-11-10 (end of M4). Update this file at the end of every session.
+Last updated 2026-11-17 (PR #2 merged). Update this file at the end of every session.
 
 ## State
 
@@ -52,6 +52,30 @@ Last updated 2026-11-10 (end of M4). Update this file at the end of every sessio
 * **Investigations filed** as fork issues #5-#12 (latency: media clock,
   120 Hz virtual output, capture->encode gap, transport, iPad 120 Hz; CPU:
   NAL copies, VPP on imported surfaces, coded-buffer copy).
+
+## 2026-11-17: PR #2 merged
+
+* `main` now has upstream v1.30.3 (merged by hand, one `.SRCINFO` conflict:
+  upstream's source/sha plus our `optdepends_x86_64` line), #1 and #2.
+* PR #2 round 2 (upstream-mergeability review): rebased onto `main`; startup
+  colour check split into `GpuConvert::check` so a failed check keeps the VPP
+  context; only a colour mismatch says "not BT.709"; `OD_VAAPI_CPU_CONVERT`
+  removed (upstream has no `OD_*` runtime knobs). Details in the PR #2
+  comment.
+* **#3 and #4 are stale:** their branches still sit on the pre-rebase #2.
+  Restack: `git rebase --update-refs --onto main ef10f17 linux/dmabuf-capture`
+  (ef10f17 = old #2 tip), then retarget #3 to `main`. Expect conflicts in
+  `ffmpeg.rs` (tests, `gpu_convert`). Same review bar: their env knobs
+  (`OD_FORCE_H264`, `OD_VAAPI_SHM_CAPTURE`, `OD_FAIL_*`,
+  `OD_DEV_LINEAR_CAPTURE`) need an upstream-shaped answer.
+* **`tools/sync-upstream.sh` STACKS is wrong now** that the stack's bottom is
+  merged: it rebases onto `upstream/main`, which would replay merged #1/#2
+  commits. Sync by hand (`git merge upstream/main` on `main`) until the
+  remaining stack is restacked on `main`.
+* **Machines:** the desktop (`omarchy-desktop`) has an RTX 3080 only; libva
+  picks NVDEC (decode only), so every VA-API test skips there. Real VA-API
+  tests run on the Zenbook (`ssh muneeb-zenbook` over Tailscale, iHD): ship a
+  `git bundle`, test in a separate worktree, remove it after.
 
 ## Next step
 
