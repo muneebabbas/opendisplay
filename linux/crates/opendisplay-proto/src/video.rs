@@ -11,6 +11,47 @@ use thiserror::Error;
 /// The only start code the spec allows on the wire (§5.1).
 pub const START_CODE: [u8; 4] = [0, 0, 0, 1];
 
+/// A video codec the protocol negotiates (§6.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Codec {
+    /// The legacy contract: every receiver decodes it.
+    H264,
+    /// Offered by receivers with a hardware HEVC decoder (`hello.videoCaps`).
+    Hevc,
+}
+
+impl Codec {
+    /// The lowercase token in `videoCaps` and `streamConfig.codec`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Codec::H264 => "h264",
+            Codec::Hevc => "hevc",
+        }
+    }
+
+    /// The codec's usual name, for messages: `H.264`, `HEVC`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Codec::H264 => "H.264",
+            Codec::Hevc => "HEVC",
+        }
+    }
+
+    /// The codec a token names, ignoring case; `None` for unknown codecs,
+    /// which §6.5 says to ignore.
+    pub fn from_token(token: &str) -> Option<Codec> {
+        [Codec::H264, Codec::Hevc]
+            .into_iter()
+            .find(|c| token.eq_ignore_ascii_case(c.as_str()))
+    }
+}
+
+impl std::fmt::Display for Codec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VideoFrameError {
     #[error("video frame contains no 4-byte start code")]
@@ -41,36 +82,71 @@ impl Telemetry {
     }
 }
 
-/// H.264 NAL unit types this protocol cares about (`nal_unit_type`, 5 bits).
+/// NAL unit types this protocol cares about, for H.264 (`nal_unit_type`, 5
+/// bits, 1-byte header) and HEVC (6 bits, 2-byte header). `Vps` and
+/// `SuffixSei` only occur in HEVC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NalType {
     NonIdrSlice,
     IdrSlice,
+    /// Prefix SEI in HEVC.
     Sei,
+    Vps,
     Sps,
     Pps,
     AccessUnitDelimiter,
+    /// HEVC suffix SEI: belongs to the picture before it.
+    SuffixSei,
     Other(u8),
 }
 
 impl NalType {
+    /// The type of an H.264 NAL unit (without start code).
     pub fn of(nal: &[u8]) -> Option<NalType> {
-        let t = *nal.first()? & 0x1f;
-        Some(match t {
-            1 => NalType::NonIdrSlice,
-            5 => NalType::IdrSlice,
-            6 => NalType::Sei,
-            7 => NalType::Sps,
-            8 => NalType::Pps,
-            9 => NalType::AccessUnitDelimiter,
-            other => NalType::Other(other),
+        Self::of_codec(Codec::H264, nal)
+    }
+
+    /// The type of a NAL unit (without start code) in the given codec.
+    ///
+    /// HEVC CRA and BLA pictures map to `NonIdrSlice`: §5.1 asks for IDR
+    /// pictures, so only IDR_W_RADL (19) and IDR_N_LP (20) are `IdrSlice`.
+    pub fn of_codec(codec: Codec, nal: &[u8]) -> Option<NalType> {
+        let first = *nal.first()?;
+        Some(match codec {
+            Codec::H264 => match first & 0x1f {
+                1 => NalType::NonIdrSlice,
+                5 => NalType::IdrSlice,
+                6 => NalType::Sei,
+                7 => NalType::Sps,
+                8 => NalType::Pps,
+                9 => NalType::AccessUnitDelimiter,
+                other => NalType::Other(other),
+            },
+            Codec::Hevc => match (first >> 1) & 0x3f {
+                19 | 20 => NalType::IdrSlice,
+                0..=31 => NalType::NonIdrSlice,
+                32 => NalType::Vps,
+                33 => NalType::Sps,
+                34 => NalType::Pps,
+                35 => NalType::AccessUnitDelimiter,
+                39 => NalType::Sei,
+                40 => NalType::SuffixSei,
+                other => NalType::Other(other),
+            },
         })
     }
 
     /// Slice data (VCL) as opposed to parameter sets, SEI, AUD (non-VCL).
+    /// Holds for both codecs: only H.264 yields `Other(2..=4)` (data
+    /// partitions), and HEVC yields `Other` only for types of 36 and above.
     pub fn is_vcl(self) -> bool {
         matches!(self, NalType::NonIdrSlice | NalType::IdrSlice)
             || matches!(self, NalType::Other(2..=4))
+    }
+
+    /// VPS, SPS or PPS.
+    pub fn is_parameter_set(self) -> bool {
+        matches!(self, NalType::Vps | NalType::Sps | NalType::Pps)
     }
 }
 
@@ -418,105 +494,159 @@ pub struct AccessUnit {
     pub is_idr: bool,
 }
 
-/// Split an Annex B stream (3- or 4-byte start codes, x264/ffmpeg style) into
-/// access units. A new picture starts at a VCL NAL whose `first_mb_in_slice`
-/// is 0 (the first Exp-Golomb bit after the NAL header is 1) — so multi-slice
-/// pictures stay together — or at an access unit delimiter. Non-VCL NALs
-/// (SPS, PPS, SEI) attach to the picture that follows them. Every IDR unit is
-/// guaranteed to start with the most recent SPS and PPS.
+/// Split an H.264 Annex B stream into access units; see [`access_units_for`].
 pub fn access_units(raw: &[u8]) -> Vec<AccessUnit> {
-    let stream = normalize_start_codes(raw);
-    let mut units = Vec::new();
-    let mut current: Vec<u8> = Vec::new();
-    let mut current_has_vcl = false;
-    let mut current_is_idr = false;
-    let mut current_has_sps = false;
-    let mut current_has_pps = false;
-    let (mut last_sps, mut last_pps): (Option<Vec<u8>>, Option<Vec<u8>>) = (None, None);
+    access_units_for(Codec::H264, raw)
+}
 
-    let flush = |current: &mut Vec<u8>,
-                 is_idr: bool,
-                 has_sps: bool,
-                 has_pps: bool,
-                 units: &mut Vec<AccessUnit>,
-                 last_sps: &Option<Vec<u8>>,
-                 last_pps: &Option<Vec<u8>>| {
-        if current.is_empty() {
+/// The newest parameter sets of a stream, by type, for IDRs that arrive
+/// without some of them (§5.1). The sending side's counterpart of
+/// [`ParameterSetTracker`].
+#[derive(Debug, Clone, Default)]
+pub struct ParameterSets {
+    vps: Option<Vec<u8>>,
+    sps: Option<Vec<u8>>,
+    pps: Option<Vec<u8>>,
+}
+
+impl ParameterSets {
+    fn slot(&mut self, ty: Option<NalType>) -> Option<&mut Option<Vec<u8>>> {
+        match ty? {
+            NalType::Vps => Some(&mut self.vps),
+            NalType::Sps => Some(&mut self.sps),
+            NalType::Pps => Some(&mut self.pps),
+            _ => None,
+        }
+    }
+
+    /// Save the parameter sets `unit` carries, then make sure an IDR carries
+    /// every set `codec` needs (SPS and PPS; VPS too for HEVC), in that
+    /// order (§5.1). An IDR that lacks any is rebuilt as its access unit
+    /// delimiter (if it starts with one), the newest sets, then its other
+    /// NAL units. Fails, leaving the unit as it is, with the name of a
+    /// needed set that was never seen.
+    pub fn complete(&mut self, codec: Codec, unit: &mut AccessUnit) -> Result<(), &'static str> {
+        let mut present = Vec::with_capacity(3);
+        for nal in nal_units(&unit.annexb) {
+            let ty = NalType::of_codec(codec, nal);
+            if let Some(slot) = self.slot(ty) {
+                *slot = Some(nal.to_vec());
+                present.extend(ty);
+            }
+        }
+        if !unit.is_idr {
+            return Ok(());
+        }
+        let all = [
+            (NalType::Vps, "VPS", &self.vps),
+            (NalType::Sps, "SPS", &self.sps),
+            (NalType::Pps, "PPS", &self.pps),
+        ];
+        let needed = match codec {
+            Codec::H264 => &all[1..],
+            Codec::Hevc => &all[..],
+        };
+        if needed.iter().all(|(ty, ..)| present.contains(ty)) {
+            return Ok(());
+        }
+        if let Some((_, name, _)) = needed.iter().find(|(.., saved)| saved.is_none()) {
+            return Err(name);
+        }
+        let mut annexb = Vec::with_capacity(unit.annexb.len() + 128);
+        let mut push = |nal: &[u8]| {
+            annexb.extend_from_slice(&START_CODE);
+            annexb.extend_from_slice(nal);
+        };
+        let mut nals = nal_units(&unit.annexb).peekable();
+        if let Some(aud) =
+            nals.next_if(|nal| NalType::of_codec(codec, nal) == Some(NalType::AccessUnitDelimiter))
+        {
+            push(aud);
+        }
+        for (.., saved) in needed {
+            push(saved.as_deref().expect("checked above"));
+        }
+        for nal in
+            nals.filter(|nal| !NalType::of_codec(codec, nal).is_some_and(NalType::is_parameter_set))
+        {
+            push(nal);
+        }
+        unit.annexb = annexb;
+        Ok(())
+    }
+}
+
+/// The picture being assembled by [`access_units_for`].
+#[derive(Default)]
+struct PendingUnit {
+    annexb: Vec<u8>,
+    has_vcl: bool,
+    is_idr: bool,
+}
+
+impl PendingUnit {
+    /// Finish the unit; an IDR gets any parameter set it lacks from `sets`
+    /// (an IDR whose set was never seen goes out as it is). Empty units are
+    /// dropped.
+    fn flush(&mut self, codec: Codec, sets: &mut ParameterSets, units: &mut Vec<AccessUnit>) {
+        let pending = std::mem::take(self);
+        if pending.annexb.is_empty() {
             return;
         }
-        let mut annexb = Vec::with_capacity(current.len() + 64);
-        if is_idr {
-            if !has_sps {
-                if let Some(s) = last_sps {
-                    annexb.extend_from_slice(&START_CODE);
-                    annexb.extend_from_slice(s);
-                }
-            }
-            if !has_pps {
-                if let Some(p) = last_pps {
-                    annexb.extend_from_slice(&START_CODE);
-                    annexb.extend_from_slice(p);
-                }
-            }
-        }
-        annexb.extend_from_slice(current);
-        units.push(AccessUnit { annexb, is_idr });
-        current.clear();
-    };
+        let mut unit = AccessUnit {
+            annexb: pending.annexb,
+            is_idr: pending.is_idr,
+        };
+        let _ = sets.complete(codec, &mut unit);
+        units.push(unit);
+    }
+}
+
+/// Split an Annex B stream (3- or 4-byte start codes, x264/ffmpeg style) into
+/// access units. A new picture starts at a VCL NAL that is the first slice of
+/// a picture, or at an access unit delimiter, so multi-slice pictures stay
+/// together. "First slice" is `first_mb_in_slice == 0` for H.264 (the first
+/// Exp-Golomb bit after the 1-byte header is 1) and
+/// `first_slice_segment_in_pic_flag` for HEVC (the MSB after the 2-byte
+/// header). Parameter sets and prefix SEI attach to the picture that follows
+/// them; an HEVC suffix SEI stays with the picture before it. Every IDR unit
+/// carries the most recent VPS (HEVC only), SPS and PPS once each has been
+/// seen ([`ParameterSets::complete`]).
+pub fn access_units_for(codec: Codec, raw: &[u8]) -> Vec<AccessUnit> {
+    let stream = normalize_start_codes(raw);
+    let mut units = Vec::new();
+    let mut current = PendingUnit::default();
+    let mut sets = ParameterSets::default();
 
     for nal in nal_units(&stream) {
-        let ty = NalType::of(nal);
-        let first_mb_zero = nal.len() > 1 && (nal[1] & 0x80) != 0;
+        let ty = NalType::of_codec(codec, nal);
+        let first_slice = match codec {
+            Codec::H264 => nal.len() > 1 && nal[1] & 0x80 != 0,
+            Codec::Hevc => nal.len() > 2 && nal[2] & 0x80 != 0,
+        };
         let starts_new_picture = match ty {
-            Some(NalType::AccessUnitDelimiter) => current_has_vcl,
-            Some(t) if t.is_vcl() => current_has_vcl && first_mb_zero,
-            // A parameter set after slice data belongs to the next picture.
-            Some(NalType::Sps | NalType::Pps | NalType::Sei) => current_has_vcl,
+            Some(NalType::AccessUnitDelimiter) => current.has_vcl,
+            Some(t) if t.is_vcl() => current.has_vcl && first_slice,
+            // Parameter sets and prefix SEI after slice data belong to the
+            // next picture.
+            Some(NalType::Vps | NalType::Sps | NalType::Pps | NalType::Sei) => current.has_vcl,
             _ => false,
         };
         if starts_new_picture {
-            flush(
-                &mut current,
-                current_is_idr,
-                current_has_sps,
-                current_has_pps,
-                &mut units,
-                &last_sps,
-                &last_pps,
-            );
-            current_has_vcl = false;
-            current_is_idr = false;
-            current_has_sps = false;
-            current_has_pps = false;
+            current.flush(codec, &mut sets, &mut units);
         }
         match ty {
-            Some(NalType::Sps) => {
-                last_sps = Some(nal.to_vec());
-                current_has_sps = true;
-            }
-            Some(NalType::Pps) => {
-                last_pps = Some(nal.to_vec());
-                current_has_pps = true;
-            }
             Some(NalType::IdrSlice) => {
-                current_has_vcl = true;
-                current_is_idr = true;
+                current.has_vcl = true;
+                current.is_idr = true;
             }
-            Some(t) if t.is_vcl() => current_has_vcl = true,
+            Some(t) if t.is_vcl() => current.has_vcl = true,
             _ => {}
         }
-        current.extend_from_slice(&START_CODE);
-        current.extend_from_slice(nal);
+        current.annexb.extend_from_slice(&START_CODE);
+        current.annexb.extend_from_slice(nal);
     }
-    flush(
-        &mut current,
-        current_is_idr,
-        current_has_sps,
-        current_has_pps,
-        &mut units,
-        &last_sps,
-        &last_pps,
-    );
+    current.flush(codec, &mut sets, &mut units);
     units
 }
 
@@ -671,5 +801,238 @@ mod tests {
             let f = VideoFrame::parse(&u.annexb).unwrap();
             assert_eq!(f.is_idr, u.is_idr);
         }
+    }
+
+    // HEVC NAL header: type in bits 1..=6 of the first byte, then a second
+    // header byte (layer id / temporal id + 1).
+    fn hevc_nal(ty: u8, payload: &[u8]) -> Vec<u8> {
+        let mut n = vec![ty << 1, 0x01];
+        n.extend_from_slice(payload);
+        n
+    }
+
+    fn annexb_of(nals: &[Vec<u8>]) -> Vec<u8> {
+        let mut raw = Vec::new();
+        for n in nals {
+            raw.extend_from_slice(&[0, 0, 1]);
+            raw.extend_from_slice(n);
+        }
+        raw
+    }
+
+    fn unit_nals(unit: &AccessUnit) -> Vec<Vec<u8>> {
+        nal_units(&unit.annexb).map(|n| n.to_vec()).collect()
+    }
+
+    fn hevc_types(unit: &AccessUnit) -> Vec<u8> {
+        nal_units(&unit.annexb)
+            .map(|n| (n[0] >> 1) & 0x3f)
+            .collect()
+    }
+
+    #[test]
+    fn hevc_nal_types_are_classified() {
+        let ty = |t: u8| NalType::of_codec(Codec::Hevc, &hevc_nal(t, &[0x80]));
+        assert_eq!(ty(19), Some(NalType::IdrSlice));
+        assert_eq!(ty(20), Some(NalType::IdrSlice));
+        for t in (0..=18).chain(21..=31) {
+            // Includes BLA (16..=18), CRA (21) and reserved VCL types.
+            assert_eq!(ty(t), Some(NalType::NonIdrSlice), "type {t}");
+        }
+        assert_eq!(ty(32), Some(NalType::Vps));
+        assert_eq!(ty(33), Some(NalType::Sps));
+        assert_eq!(ty(34), Some(NalType::Pps));
+        assert_eq!(ty(35), Some(NalType::AccessUnitDelimiter));
+        assert_eq!(ty(36), Some(NalType::Other(36)));
+        assert_eq!(ty(39), Some(NalType::Sei));
+        assert_eq!(ty(40), Some(NalType::SuffixSei));
+        assert_eq!(ty(41), Some(NalType::Other(41)));
+        assert_eq!(NalType::of_codec(Codec::Hevc, &[]), None);
+        // is_vcl is right for HEVC: no Other(t) below 36 is produced.
+        for t in 0..64 {
+            let nal = NalType::of_codec(Codec::Hevc, &hevc_nal(t, &[0x80])).unwrap();
+            assert_eq!(nal.is_vcl(), t <= 31, "type {t}");
+        }
+        assert!(NalType::Vps.is_parameter_set());
+        assert!(NalType::Sps.is_parameter_set());
+        assert!(NalType::Pps.is_parameter_set());
+        assert!(!NalType::Sei.is_parameter_set());
+        // The H.264 mapping is unchanged.
+        assert_eq!(NalType::of(&[0x65]), Some(NalType::IdrSlice));
+        assert_eq!(NalType::of(&[0x67]), Some(NalType::Sps));
+        assert!(NalType::of(&[0x42]).unwrap().is_vcl()); // type 2
+    }
+
+    // testdata/clip-320x180-30.h265 was made with:
+    //   ffmpeg -f lavfi -i testsrc2=size=320x180:rate=30 -frames:v 30 \
+    //     -c:v libx265 -crf 34 -x265-params keyint=10:min-keyint=10:bframes=0:\
+    //     scenecut=0:slices=2:repeat-headers=1:open-gop=0:info=0 -f hevc \
+    //     clip-320x180-30.h265
+    // 30 pictures, IDR_N_LP (type 20) at 0, 10 and 20, two slice segments per
+    // picture, VPS/SPS/PPS repeated before every IDR.
+    #[test]
+    fn hevc_clip_groups_pictures_and_keeps_parameter_sets_on_idr() {
+        let clip = include_bytes!("../../../testdata/clip-320x180-30.h265");
+        let units = access_units_for(Codec::Hevc, clip);
+        assert_eq!(units.len(), 30);
+        let idrs: Vec<usize> = (0..units.len()).filter(|&i| units[i].is_idr).collect();
+        assert_eq!(idrs, vec![0, 10, 20]); // ffprobe: 3 key frames
+        for (i, u) in units.iter().enumerate() {
+            let types = hevc_types(u);
+            if u.is_idr {
+                assert_eq!(types, vec![32, 33, 34, 20, 20], "unit {i}");
+            } else {
+                assert_eq!(types, vec![1, 1], "unit {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn hevc_idr_without_parameter_sets_gets_last_ones() {
+        let (vps, sps, pps) = (hevc_nal(32, &[1]), hevc_nal(33, &[2]), hevc_nal(34, &[3]));
+        let idr_a = hevc_nal(19, &[0x80]); // first_slice_segment_in_pic_flag
+        let idr_b = hevc_nal(19, &[0x00]);
+        let p = hevc_nal(1, &[0x80]);
+        let raw = annexb_of(&[
+            vps.clone(),
+            sps.clone(),
+            pps.clone(),
+            idr_a.clone(),
+            idr_b.clone(),
+            p.clone(),
+            idr_a.clone(),
+        ]);
+        let units = access_units_for(Codec::Hevc, &raw);
+        assert_eq!(units.len(), 3);
+        assert!(units[0].is_idr && !units[1].is_idr && units[2].is_idr);
+        assert_eq!(unit_nals(&units[1]), vec![p]);
+        assert_eq!(unit_nals(&units[2]), vec![vps, sps, pps, idr_a]);
+    }
+
+    #[test]
+    fn hevc_suffix_sei_stays_with_its_picture() {
+        let p = hevc_nal(1, &[0x80]);
+        let suffix = hevc_nal(40, &[0x80, 0x01]);
+        let prefix = hevc_nal(39, &[0x80, 0x01]);
+        let raw = annexb_of(&[p.clone(), suffix.clone(), prefix.clone(), p.clone()]);
+        let units = access_units_for(Codec::Hevc, &raw);
+        assert_eq!(units.len(), 2);
+        assert_eq!(unit_nals(&units[0]), vec![p.clone(), suffix]);
+        assert_eq!(unit_nals(&units[1]), vec![prefix, p]);
+    }
+
+    #[test]
+    fn hevc_idr_with_only_sps_pps_gets_vps_prepended() {
+        let (vps, sps, pps) = (hevc_nal(32, &[1]), hevc_nal(33, &[2]), hevc_nal(34, &[3]));
+        let idr = hevc_nal(20, &[0x80]);
+        let p = hevc_nal(1, &[0x80]);
+        let raw = annexb_of(&[
+            vps.clone(),
+            sps.clone(),
+            pps.clone(),
+            idr.clone(),
+            p,
+            sps.clone(),
+            pps.clone(),
+            idr.clone(),
+        ]);
+        let units = access_units_for(Codec::Hevc, &raw);
+        assert_eq!(units.len(), 3);
+        assert_eq!(unit_nals(&units[2]), vec![vps, sps, pps, idr]);
+    }
+
+    fn annexb(nals: &[&[u8]]) -> Vec<u8> {
+        nals.iter()
+            .flat_map(|n| [&START_CODE[..], n].concat())
+            .collect()
+    }
+
+    fn idr(nals: &[&[u8]]) -> AccessUnit {
+        AccessUnit {
+            annexb: annexb(nals),
+            is_idr: true,
+        }
+    }
+
+    // HEVC NAL headers (type << 1): VPS, SPS, PPS, AUD, IDR_W_RADL (first slice).
+    const VPS: &[u8] = &[0x40, 0x01, 0xaa];
+    const VPS2: &[u8] = &[0x40, 0x01, 0xbb];
+    const SPS: &[u8] = &[0x42, 0x01, 0xaa];
+    const PPS: &[u8] = &[0x44, 0x01, 0xaa];
+    const AUD: &[u8] = &[0x46, 0x01, 0x50];
+    const IDR: &[u8] = &[0x26, 0x01, 0x80];
+
+    #[test]
+    fn hevc_idr_missing_some_parameter_sets_gets_them_in_order() {
+        let mut sets = ParameterSets::default();
+        let mut first = idr(&[VPS, SPS, PPS, IDR]);
+        sets.complete(Codec::Hevc, &mut first).unwrap();
+        assert_eq!(
+            first.annexb,
+            annexb(&[VPS, SPS, PPS, IDR]),
+            "complete: unchanged"
+        );
+
+        // Only the VPS is missing; it goes in front of the SPS it precedes.
+        let mut no_vps = idr(&[SPS, PPS, IDR]);
+        sets.complete(Codec::Hevc, &mut no_vps).unwrap();
+        assert_eq!(no_vps.annexb, annexb(&[VPS, SPS, PPS, IDR]));
+
+        // Only the SPS is missing, behind an AUD that must stay first.
+        let mut no_sps = idr(&[AUD, VPS2, PPS, IDR]);
+        sets.complete(Codec::Hevc, &mut no_sps).unwrap();
+        assert_eq!(no_sps.annexb, annexb(&[AUD, VPS2, SPS, PPS, IDR]));
+
+        // None at all: the newest of each.
+        let mut bare = idr(&[IDR]);
+        sets.complete(Codec::Hevc, &mut bare).unwrap();
+        assert_eq!(bare.annexb, annexb(&[VPS2, SPS, PPS, IDR]));
+    }
+
+    #[test]
+    fn idr_without_a_parameter_set_ever_seen_is_refused() {
+        let mut sets = ParameterSets::default();
+        assert_eq!(
+            sets.complete(Codec::Hevc, &mut idr(&[SPS, PPS, IDR])),
+            Err("VPS")
+        );
+        assert_eq!(sets.complete(Codec::Hevc, &mut idr(&[IDR])), Err("VPS"));
+        // The SPS and PPS it did carry are kept for later.
+        let mut later = idr(&[VPS, IDR]);
+        sets.complete(Codec::Hevc, &mut later).unwrap();
+        assert_eq!(later.annexb, annexb(&[VPS, SPS, PPS, IDR]));
+    }
+
+    #[test]
+    fn h264_idr_needs_no_vps() {
+        let (sps, pps, idr_slice): (&[u8], &[u8], &[u8]) =
+            (&[0x67, 0x42], &[0x68, 0xce], &[0x65, 0x88]);
+        let mut sets = ParameterSets::default();
+        assert_eq!(
+            sets.complete(Codec::H264, &mut idr(&[idr_slice])),
+            Err("SPS")
+        );
+        let mut full = idr(&[sps, pps, idr_slice]);
+        sets.complete(Codec::H264, &mut full).unwrap();
+        assert_eq!(full.annexb, annexb(&[sps, pps, idr_slice]));
+        let mut no_pps = idr(&[sps, idr_slice]);
+        sets.complete(Codec::H264, &mut no_pps).unwrap();
+        assert_eq!(no_pps.annexb, annexb(&[sps, pps, idr_slice]));
+    }
+
+    #[test]
+    fn a_filled_in_idr_keeps_its_access_unit_delimiter_first() {
+        // H.264: AUD, SPS, PPS, IDR; P; AUD, PPS, IDR (no SPS).
+        let (aud, sps, pps): (&[u8], &[u8], &[u8]) = (&[0x09, 0xf0], &[0x67, 0x42], &[0x68, 0xce]);
+        let (idr_slice, p): (&[u8], &[u8]) = (&[0x65, 0x88], &[0x41, 0x9a]);
+        let raw = annexb(&[aud, sps, pps, idr_slice, aud, p, aud, pps, idr_slice]);
+        let units = access_units(&raw);
+        assert_eq!(units.len(), 3);
+        assert_eq!(units[2].annexb, annexb(&[aud, sps, pps, idr_slice]));
+        // HEVC: an IDR with VPS and PPS gets the SPS between them.
+        let raw = annexb(&[VPS, SPS, PPS, IDR, VPS2, PPS, IDR]);
+        let units = access_units_for(Codec::Hevc, &raw);
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[1].annexb, annexb(&[VPS2, SPS, PPS, IDR]));
     }
 }

@@ -151,6 +151,7 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
         }
         let s = encoder::EncoderSettings {
             backend: b,
+            codec: opendisplay_proto::video::Codec::H264,
             bitrate_bps: 2_000_000,
             max_fps: 60.0,
             threads: 1,
@@ -161,6 +162,13 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
         }
     }
     println!("  (x264 and OpenH264 encode on the CPU; VA-API is opt-in: --encoder vaapi)");
+    // 1080p: whether the GPU opens an HEVC encoder at all; a larger size is
+    // probed again when a stream needs it.
+    if encoder::can_encode_hevc(1920, 1080) {
+        println!("  VA-API HEVC: ok (streamed when the receiver offers it)");
+    } else {
+        println!("  VA-API HEVC: unavailable (VA-API streams H.264)");
+    }
 
     let dir: PathBuf = lock::dir();
     println!("\nlocks: {}", dir.display());
