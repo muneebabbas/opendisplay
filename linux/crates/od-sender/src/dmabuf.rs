@@ -626,24 +626,30 @@ mod tests {
         let check = |b: &GbmBuffer| {
             assert!(!b.planes.is_empty());
             assert!(b.planes[0].stride >= w * 4);
-            eprintln!(
-                "{} planes, modifier {}, stride {}",
-                b.planes.len(),
-                modifier_name(b.modifier),
-                b.planes[0].stride
-            );
         };
+        // Not every GPU allocates every list (NVIDIA refuses an explicit
+        // LINEAR), but filling must work wherever allocating does, in a
+        // layout from the list.
         for mods in [&[DRM_FORMAT_MOD_LINEAR][..], &[0x0100_0000_0000_0009, 0]] {
-            match dev.alloc(w, h, fmt, mods) {
-                Ok(b) => check(&b),
-                Err(e) => eprintln!("alloc with {mods:x?} unsupported: {e:#}"),
-            }
-            match dev.alloc_filled(w, h, fmt, mods, fill) {
-                Ok(b) => check(&b),
-                Err(e) => eprintln!("alloc_filled with {mods:x?} unsupported: {e:#}"),
-            }
+            let Ok(b) = dev.alloc(w, h, fmt, mods) else {
+                continue;
+            };
+            check(&b);
+            assert!(
+                mods.contains(&b.modifier),
+                "{mods:x?}: got {:x}",
+                b.modifier
+            );
+            let b = dev
+                .alloc_filled(w, h, fmt, mods, fill)
+                .unwrap_or_else(|e| panic!("alloc_filled with {mods:x?}: {e:#}"));
+            check(&b);
+            assert!(
+                mods.contains(&b.modifier),
+                "{mods:x?}: got {:x}",
+                b.modifier
+            );
         }
-        let b = dev.alloc(w, h, fmt, &[]).unwrap();
-        check(&b);
+        check(&dev.alloc(w, h, fmt, &[]).unwrap());
     }
 }

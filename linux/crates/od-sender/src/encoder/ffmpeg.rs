@@ -677,7 +677,6 @@ mod tests {
         ] {
             for x in [0, w / 2, w - 1] {
                 let got = sample(&nv12, x, at);
-                eprintln!("{what}: {name} at {x},{at} {got:?}");
                 assert!(
                     got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 2),
                     "{what}: {name} at {x},{at} came out as {got:?}, expected {want:?}"
@@ -1067,36 +1066,40 @@ mod tests {
             let _src = gpu
                 .convert(&dst, &px, stride, format, &mut Steps::new("test"))
                 .unwrap();
-            let got = download(&dst).unwrap();
-            // swscale is the reference the receiver's colours are defined by.
-            let mut want = new_video(Pixel::NV12, w as u32, h as u32);
-            Converter::new(w as u32, h as u32, Pixel::NV12, 1)
-                .unwrap()
-                .convert(&px, stride, format, &mut want)
-                .unwrap();
-            for (i, rgb) in PATCHES.iter().enumerate() {
-                let at = (i * BLOCK + BLOCK / 2, BLOCK / 2);
-                let (g, wnt) = (sample(&got, at.0, at.1), sample(&want, at.0, at.1));
-                assert!(
-                    g.iter().zip(wnt).all(|(g, w)| g.abs_diff(w) <= 1),
-                    "{format:?} {rgb:?} (mapped upload {direct}): GPU {g:?}, swscale {wnt:?}"
-                );
-            }
-            // Known values for red and white, so the reference itself is checked.
-            let red = sample(&got, BLOCK / 2, BLOCK / 2);
-            assert!(
-                red.iter()
-                    .zip([63, 102, 240])
-                    .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 1)
-            );
-            let white = sample(&got, 3 * BLOCK + BLOCK / 2, BLOCK / 2);
-            assert!(
-                white
-                    .iter()
-                    .zip([235, 128, 128])
-                    .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 1)
+            assert_patches(
+                &dst,
+                format,
+                &format!("{format:?} (mapped upload {direct})"),
             );
         }
+    }
+
+    /// `dst` holds [`patches`] in `format` converted to BT.709 limited range:
+    /// every patch within 1 level of swscale, the reference the receiver's
+    /// colours are defined by, and red and white at their known values, so
+    /// the reference itself is checked.
+    fn assert_patches(dst: &ff::frame::Video, format: PixelFormat, what: &str) {
+        let (w, h) = (PATCHES.len() * BLOCK, BLOCK);
+        let got = download(dst).unwrap();
+        let (px, stride) = patches(format);
+        let mut want = new_video(Pixel::NV12, w as u32, h as u32);
+        Converter::new(w as u32, h as u32, Pixel::NV12, 1)
+            .unwrap()
+            .convert(&px, stride, format, &mut want)
+            .unwrap();
+        let near = |g: [u8; 3], w: [u8; 3]| g.iter().zip(w).all(|(g, w)| g.abs_diff(w) <= 1);
+        for (i, rgb) in PATCHES.iter().enumerate() {
+            let at = (i * BLOCK + BLOCK / 2, BLOCK / 2);
+            let (g, wnt) = (sample(&got, at.0, at.1), sample(&want, at.0, at.1));
+            assert!(near(g, wnt), "{what} {rgb:?}: GPU {g:?}, swscale {wnt:?}");
+        }
+        let red = sample(&got, BLOCK / 2, BLOCK / 2);
+        assert!(near(red, [63, 102, 240]), "{what}: red came out as {red:?}");
+        let white = sample(&got, 3 * BLOCK + BLOCK / 2, BLOCK / 2);
+        assert!(
+            near(white, [235, 128, 128]),
+            "{what}: white came out as {white:?}"
+        );
     }
 
     #[test]
@@ -1170,9 +1173,11 @@ mod tests {
                         row[at..at + 4].try_into().unwrap()
                     })
                     .unwrap();
-                eprintln!("{format:?} dmabuf, {}", modifier_name(b.modifier));
                 into_dmabuf(b, 1)
             });
+            let layout = buf
+                .as_ref()
+                .map_or("system memory".into(), |b| modifier_name(b.modifier));
             let mut last = None;
             for i in 0..3 {
                 let units = match &buf {
@@ -1210,7 +1215,7 @@ mod tests {
                     got.iter()
                         .zip(want)
                         .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 4),
-                    "{format:?} {mods:x?} patch {i}: decoded {got:?}, expected {want:?}"
+                    "{format:?} {layout} patch {i}: decoded {got:?}, expected {want:?}"
                 );
             }
         }
@@ -1301,31 +1306,41 @@ mod tests {
 
     #[test]
     fn vaapi_dmabuf_convert_is_bt709_limited() {
-        let (w, h) = (256, 128);
+        let (w, h) = ((PATCHES.len() * BLOCK) as u32, BLOCK as u32);
         let Some((hw, mut gpu)) = gpu(w, h) else {
             return;
         };
         let Some(dev) = gbm_device() else { return };
         let mut id = 0;
         for format in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888] {
-            for mods in [
-                &[DRM_FORMAT_MOD_LINEAR][..],
-                &[I915_4_TILED, DRM_FORMAT_MOD_LINEAR],
-            ] {
-                let b = match red_over_blue(&dev, w, h, format, mods) {
-                    Ok(b) => b,
+            for modifier in [DRM_FORMAT_MOD_LINEAR, I915_4_TILED] {
+                let (row, _) = patches(format);
+                let fill = |x: u32, _| {
+                    let at = x as usize * 4;
+                    row[at..at + 4].try_into().unwrap()
+                };
+                let what = format!("{format:?} {}", modifier_name(modifier));
+                let b = match dev.alloc_filled(w, h, format, &[modifier], fill) {
+                    Ok(b) if b.modifier == modifier => b,
+                    // LINEAR is the one layout capture uses outside Intel,
+                    // so a GPU that converts must allocate it.
+                    _ if modifier == DRM_FORMAT_MOD_LINEAR => panic!("{what}: not allocated"),
+                    Ok(b) => {
+                        let got = modifier_name(b.modifier);
+                        eprintln!("skipped {what}: gbm allocated {got}");
+                        continue;
+                    }
                     Err(e) => {
-                        eprintln!("{format:?} {mods:x?}: not allocated here ({e:#})");
+                        eprintln!("skipped {what}: not allocated here ({e:#})");
                         continue;
                     }
                 };
-                let what = format!("{format:?} {}", modifier_name(b.modifier));
                 id += 1;
                 let frame = into_dmabuf(b, id);
                 let dst = hw_surface(hw.frames).unwrap();
                 gpu.convert_dmabuf(&dst, &frame, &mut Steps::new("test"))
                     .unwrap_or_else(|e| panic!("{what}: {e:#}"));
-                assert_red_over_blue(&dst, &what);
+                assert_patches(&dst, format, &what);
             }
         }
     }
@@ -1346,26 +1361,13 @@ mod tests {
             let b = red_over_blue(&dev, w + 1, h + 1, PixelFormat::Xrgb8888, mods).unwrap();
             let what = format!("{}x{} {}", w + 1, h + 1, modifier_name(b.modifier));
             let frame = into_dmabuf(b, mods.len() as u64);
-            let dst = hw_surface(hw.frames).unwrap();
-            // The first call imports, the others find the surface (timings
-            // informational).
-            let mut times = Vec::new();
-            for _ in 0..20 {
-                let t = Instant::now();
+            // The first conversion imports, the second finds the surface.
+            for pass in ["imported", "cached"] {
+                let dst = hw_surface(hw.frames).unwrap();
                 gpu.convert_dmabuf(&dst, &frame, &mut Steps::new("test"))
-                    .unwrap_or_else(|e| panic!("{what}: {e:#}"));
-                times.push(t.elapsed().as_secs_f64() * 1000.0);
-                // Waits for the conversion, so the next one is not queued
-                // behind it.
-                download(&dst).unwrap();
+                    .unwrap_or_else(|e| panic!("{what} {pass}: {e:#}"));
+                assert_red_over_blue(&dst, &format!("{what} {pass}"));
             }
-            let first = times.remove(0);
-            times.sort_by(f64::total_cmp);
-            eprintln!(
-                "{what}: import and submit {first:.3} ms, cached submit p50 {:.3} ms",
-                times[times.len() / 2]
-            );
-            assert_red_over_blue(&dst, &what);
         }
     }
 
