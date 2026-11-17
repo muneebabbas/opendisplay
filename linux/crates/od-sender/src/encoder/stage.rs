@@ -70,11 +70,16 @@ impl Drop for YuvFrame {
 /// Allocate a frame with the colour description the encoders announce.
 pub(super) fn new_video(format: Pixel, width: u32, height: u32) -> ff::frame::Video {
     let mut v = ff::frame::Video::new(format, width, height);
+    tag_bt709(&mut v);
+    v
+}
+
+/// Give a frame the colour description the encoders announce.
+pub(super) fn tag_bt709(v: &mut ff::frame::Video) {
     v.set_color_space(color::Space::BT709);
     v.set_color_primaries(color::Primaries::BT709);
     v.set_color_transfer_characteristic(color::TransferCharacteristic::BT709);
     v.set_color_range(color::Range::MPEG);
-    v
 }
 
 /// Shared between the encode thread (which binds the target format) and
