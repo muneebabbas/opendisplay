@@ -388,6 +388,18 @@ impl FfmpegEncoder {
         Ok((surface, source))
     }
 
+    /// Record the frame just sent under the current pts and move to the next.
+    fn queue(&mut self, captured_at: Instant, started: Instant, source: Option<ff::frame::Video>) {
+        self.in_flight.push_back(InFlight {
+            pts: self.pts,
+            captured_at,
+            started,
+            _source: source,
+        });
+        // 1/60 s apart in the time base; the encoder only needs monotonic pts.
+        self.pts += 16_667;
+    }
+
     fn submit(
         &mut self,
         frame: &mut ff::frame::Video,
@@ -427,25 +439,12 @@ impl FfmpegEncoder {
                 // in the queue until a later packet drains this entry,
                 // rather than handing it back to the pool now. The pts is
                 // spent so the next frame's timings stay its own.
-                self.in_flight.push_back(InFlight {
-                    pts: self.pts,
-                    captured_at,
-                    started: t0,
-                    _source: source,
-                });
-                self.pts += 16_667;
+                self.queue(captured_at, t0, source);
             }
             return Err(e).context("send_frame");
         }
         self.steps.lap("send_frame");
-        self.in_flight.push_back(InFlight {
-            pts: self.pts,
-            captured_at,
-            started: t0,
-            _source: source,
-        });
-        // 1/60 s apart in the time base; the encoder only needs monotonic pts.
-        self.pts += 16_667;
+        self.queue(captured_at, t0, source);
 
         // Usually one packet per call; a hardware encoder can lag by one and
         // then return two. Every picture goes out: dropping a P frame would
