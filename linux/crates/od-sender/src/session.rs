@@ -363,6 +363,9 @@ impl EncodePipeline {
                             settings.backend = e.backend();
                             enc_stage.bind(&e);
                             encoder = Some(e);
+                            // A new encoder starts with a clean record, like
+                            // the Mac's setupEncoder.
+                            failures = 0;
                             enc_force.store(true, Ordering::Relaxed);
                         }
                         Err(e) if hevc => {
