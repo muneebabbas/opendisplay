@@ -21,9 +21,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use ff::format::Pixel;
 use ff::util::color;
 use ffmpeg_next as ff;
-use opendisplay_proto::video::{
-    AccessUnit, Codec, NalType, START_CODE, access_units_for, nal_units,
-};
+use opendisplay_proto::video::{AccessUnit, Codec, ParameterSets, access_units_for};
 use tracing::{debug, warn};
 
 use super::convert::{Converter, band_count};
@@ -516,68 +514,6 @@ impl FfmpegEncoder {
     }
 }
 
-/// The most recent parameter sets an IDR carried, by type: VPS (HEVC only),
-/// SPS, PPS.
-#[derive(Default)]
-struct ParameterSets([Option<Vec<u8>>; 3]);
-
-const PARAMETER_SET_NAMES: [&str; 3] = ["VPS", "SPS", "PPS"];
-
-impl ParameterSets {
-    fn slot(codec: Codec, nal: &[u8]) -> Option<usize> {
-        match NalType::of_codec(codec, nal)? {
-            NalType::Vps => Some(0),
-            NalType::Sps => Some(1),
-            NalType::Pps => Some(2),
-            _ => None,
-        }
-    }
-
-    /// Make the IDR `unit` carry every parameter set `codec` needs (SPS and
-    /// PPS; VPS too for HEVC), in that order (§5.1). The sets it carries
-    /// replace the saved ones. A unit that lacks any is rebuilt as its access
-    /// unit delimiter (if any), the sets, then its other NAL units. Fails
-    /// with the name of a needed set that was never seen.
-    fn complete(&mut self, codec: Codec, unit: &mut AccessUnit) -> Result<(), &'static str> {
-        let mut present = [false; 3];
-        for nal in nal_units(&unit.annexb) {
-            if let Some(i) = Self::slot(codec, nal) {
-                self.0[i] = Some(nal.to_vec());
-                present[i] = true;
-            }
-        }
-        let first = match codec {
-            Codec::H264 => 1,
-            Codec::Hevc => 0,
-        };
-        if present[first..].iter().all(|p| *p) {
-            return Ok(());
-        }
-        if let Some(i) = (first..3).find(|&i| self.0[i].is_none()) {
-            return Err(PARAMETER_SET_NAMES[i]);
-        }
-        let mut annexb = Vec::with_capacity(unit.annexb.len() + 128);
-        let mut push = |nal: &[u8]| {
-            annexb.extend_from_slice(&START_CODE);
-            annexb.extend_from_slice(nal);
-        };
-        let mut nals = nal_units(&unit.annexb).peekable();
-        if let Some(aud) =
-            nals.next_if(|nal| NalType::of_codec(codec, nal) == Some(NalType::AccessUnitDelimiter))
-        {
-            push(aud);
-        }
-        for set in self.0[first..].iter().flatten() {
-            push(set);
-        }
-        for nal in nals.filter(|nal| Self::slot(codec, nal).is_none()) {
-            push(nal);
-        }
-        unit.annexb = annexb;
-        Ok(())
-    }
-}
-
 /// Set up GPU colour conversion for a VA-API encoder, or say why not and
 /// leave it to swscale. A converter that fails its colour check comes back
 /// marked failed (`true`) rather than dropped: see `FfmpegEncoder::gpu_failed`.
@@ -626,6 +562,7 @@ mod tests {
     use crate::backend::{Frame, FrameBuf, Pixels};
     use crate::encoder::vpp::{download, sample};
     use crate::encoder::{Backend, Encoder};
+    use opendisplay_proto::video::nal_units;
 
     const SETTINGS: EncoderSettings = EncoderSettings {
         backend: Backend::Vaapi,
@@ -846,85 +783,6 @@ mod tests {
     #[test]
     fn vaapi_hevc_gpu_idrs_only_on_demand_with_parameter_sets() {
         hevc_idrs_only_on_demand_with_parameter_sets(true);
-    }
-
-    fn annexb(nals: &[&[u8]]) -> Vec<u8> {
-        nals.iter()
-            .flat_map(|n| [&START_CODE[..], n].concat())
-            .collect()
-    }
-
-    fn idr(nals: &[&[u8]]) -> AccessUnit {
-        AccessUnit {
-            annexb: annexb(nals),
-            is_idr: true,
-        }
-    }
-
-    // HEVC NAL headers (type << 1): VPS, SPS, PPS, AUD, IDR_W_RADL (first slice).
-    const VPS: &[u8] = &[0x40, 0x01, 0xaa];
-    const VPS2: &[u8] = &[0x40, 0x01, 0xbb];
-    const SPS: &[u8] = &[0x42, 0x01, 0xaa];
-    const PPS: &[u8] = &[0x44, 0x01, 0xaa];
-    const AUD: &[u8] = &[0x46, 0x01, 0x50];
-    const IDR: &[u8] = &[0x26, 0x01, 0x80];
-
-    #[test]
-    fn hevc_idr_missing_some_parameter_sets_gets_them_in_order() {
-        let mut sets = ParameterSets::default();
-        let mut first = idr(&[VPS, SPS, PPS, IDR]);
-        sets.complete(Codec::Hevc, &mut first).unwrap();
-        assert_eq!(
-            first.annexb,
-            annexb(&[VPS, SPS, PPS, IDR]),
-            "complete: unchanged"
-        );
-
-        // Only the VPS is missing; it goes in front of the SPS it precedes.
-        let mut no_vps = idr(&[SPS, PPS, IDR]);
-        sets.complete(Codec::Hevc, &mut no_vps).unwrap();
-        assert_eq!(no_vps.annexb, annexb(&[VPS, SPS, PPS, IDR]));
-
-        // Only the SPS is missing, behind an AUD that must stay first.
-        let mut no_sps = idr(&[AUD, VPS2, PPS, IDR]);
-        sets.complete(Codec::Hevc, &mut no_sps).unwrap();
-        assert_eq!(no_sps.annexb, annexb(&[AUD, VPS2, SPS, PPS, IDR]));
-
-        // None at all: the newest of each.
-        let mut bare = idr(&[IDR]);
-        sets.complete(Codec::Hevc, &mut bare).unwrap();
-        assert_eq!(bare.annexb, annexb(&[VPS2, SPS, PPS, IDR]));
-    }
-
-    #[test]
-    fn idr_without_a_parameter_set_ever_seen_is_refused() {
-        let mut sets = ParameterSets::default();
-        assert_eq!(
-            sets.complete(Codec::Hevc, &mut idr(&[SPS, PPS, IDR])),
-            Err("VPS")
-        );
-        assert_eq!(sets.complete(Codec::Hevc, &mut idr(&[IDR])), Err("VPS"));
-        // The SPS and PPS it did carry are kept for later.
-        let mut later = idr(&[VPS, IDR]);
-        sets.complete(Codec::Hevc, &mut later).unwrap();
-        assert_eq!(later.annexb, annexb(&[VPS, SPS, PPS, IDR]));
-    }
-
-    #[test]
-    fn h264_idr_needs_no_vps() {
-        let (sps, pps, idr_slice): (&[u8], &[u8], &[u8]) =
-            (&[0x67, 0x42], &[0x68, 0xce], &[0x65, 0x88]);
-        let mut sets = ParameterSets::default();
-        assert_eq!(
-            sets.complete(Codec::H264, &mut idr(&[idr_slice])),
-            Err("SPS")
-        );
-        let mut full = idr(&[sps, pps, idr_slice]);
-        sets.complete(Codec::H264, &mut full).unwrap();
-        assert_eq!(full.annexb, annexb(&[sps, pps, idr_slice]));
-        let mut no_pps = idr(&[sps, idr_slice]);
-        sets.complete(Codec::H264, &mut no_pps).unwrap();
-        assert_eq!(no_pps.annexb, annexb(&[sps, pps, idr_slice]));
     }
 
     #[test]

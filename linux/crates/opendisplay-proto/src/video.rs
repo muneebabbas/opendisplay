@@ -492,51 +492,106 @@ pub fn access_units(raw: &[u8]) -> Vec<AccessUnit> {
     access_units_for(Codec::H264, raw)
 }
 
+/// The newest parameter sets of a stream, by type, for IDRs that arrive
+/// without some of them (§5.1). The sending side's counterpart of
+/// [`ParameterSetTracker`].
+#[derive(Debug, Clone, Default)]
+pub struct ParameterSets {
+    vps: Option<Vec<u8>>,
+    sps: Option<Vec<u8>>,
+    pps: Option<Vec<u8>>,
+}
+
+impl ParameterSets {
+    fn slot(&mut self, ty: Option<NalType>) -> Option<&mut Option<Vec<u8>>> {
+        match ty? {
+            NalType::Vps => Some(&mut self.vps),
+            NalType::Sps => Some(&mut self.sps),
+            NalType::Pps => Some(&mut self.pps),
+            _ => None,
+        }
+    }
+
+    /// Save the parameter sets `unit` carries, then make sure an IDR carries
+    /// every set `codec` needs (SPS and PPS; VPS too for HEVC), in that
+    /// order (§5.1). An IDR that lacks any is rebuilt as its access unit
+    /// delimiter (if it starts with one), the newest sets, then its other
+    /// NAL units. Fails, leaving the unit as it is, with the name of a
+    /// needed set that was never seen.
+    pub fn complete(&mut self, codec: Codec, unit: &mut AccessUnit) -> Result<(), &'static str> {
+        let mut present = Vec::with_capacity(3);
+        for nal in nal_units(&unit.annexb) {
+            let ty = NalType::of_codec(codec, nal);
+            if let Some(slot) = self.slot(ty) {
+                *slot = Some(nal.to_vec());
+                present.extend(ty);
+            }
+        }
+        if !unit.is_idr {
+            return Ok(());
+        }
+        let all = [
+            (NalType::Vps, "VPS", &self.vps),
+            (NalType::Sps, "SPS", &self.sps),
+            (NalType::Pps, "PPS", &self.pps),
+        ];
+        let needed = match codec {
+            Codec::H264 => &all[1..],
+            Codec::Hevc => &all[..],
+        };
+        if needed.iter().all(|(ty, ..)| present.contains(ty)) {
+            return Ok(());
+        }
+        if let Some((_, name, _)) = needed.iter().find(|(.., saved)| saved.is_none()) {
+            return Err(name);
+        }
+        let mut annexb = Vec::with_capacity(unit.annexb.len() + 128);
+        let mut push = |nal: &[u8]| {
+            annexb.extend_from_slice(&START_CODE);
+            annexb.extend_from_slice(nal);
+        };
+        let mut nals = nal_units(&unit.annexb).peekable();
+        if let Some(aud) =
+            nals.next_if(|nal| NalType::of_codec(codec, nal) == Some(NalType::AccessUnitDelimiter))
+        {
+            push(aud);
+        }
+        for (.., saved) in needed {
+            push(saved.as_deref().expect("checked above"));
+        }
+        for nal in
+            nals.filter(|nal| !NalType::of_codec(codec, nal).is_some_and(NalType::is_parameter_set))
+        {
+            push(nal);
+        }
+        unit.annexb = annexb;
+        Ok(())
+    }
+}
+
 /// The picture being assembled by [`access_units_for`].
 #[derive(Default)]
 struct PendingUnit {
     annexb: Vec<u8>,
     has_vcl: bool,
     is_idr: bool,
-    has_vps: bool,
-    has_sps: bool,
-    has_pps: bool,
-}
-
-/// The most recent parameter sets seen in the stream.
-#[derive(Default)]
-struct LastParameterSets {
-    vps: Option<Vec<u8>>,
-    sps: Option<Vec<u8>>,
-    pps: Option<Vec<u8>>,
 }
 
 impl PendingUnit {
-    /// Finish the unit, prepending any parameter set an IDR lacks (VPS, SPS,
-    /// PPS order) from `last`. Empty units are dropped.
-    fn flush(&mut self, last: &LastParameterSets, units: &mut Vec<AccessUnit>) {
-        let unit = std::mem::take(self);
-        if unit.annexb.is_empty() {
+    /// Finish the unit; an IDR gets any parameter set it lacks from `sets`
+    /// (an IDR whose set was never seen goes out as it is). Empty units are
+    /// dropped.
+    fn flush(&mut self, codec: Codec, sets: &mut ParameterSets, units: &mut Vec<AccessUnit>) {
+        let pending = std::mem::take(self);
+        if pending.annexb.is_empty() {
             return;
         }
-        let mut annexb = Vec::with_capacity(unit.annexb.len() + 96);
-        if unit.is_idr {
-            for (present, saved) in [
-                (unit.has_vps, &last.vps),
-                (unit.has_sps, &last.sps),
-                (unit.has_pps, &last.pps),
-            ] {
-                if let (false, Some(nal)) = (present, saved) {
-                    annexb.extend_from_slice(&START_CODE);
-                    annexb.extend_from_slice(nal);
-                }
-            }
-        }
-        annexb.extend_from_slice(&unit.annexb);
-        units.push(AccessUnit {
-            annexb,
-            is_idr: unit.is_idr,
-        });
+        let mut unit = AccessUnit {
+            annexb: pending.annexb,
+            is_idr: pending.is_idr,
+        };
+        let _ = sets.complete(codec, &mut unit);
+        units.push(unit);
     }
 }
 
@@ -548,12 +603,13 @@ impl PendingUnit {
 /// `first_slice_segment_in_pic_flag` for HEVC (the MSB after the 2-byte
 /// header). Parameter sets and prefix SEI attach to the picture that follows
 /// them; an HEVC suffix SEI stays with the picture before it. Every IDR unit
-/// is guaranteed to start with the most recent VPS (HEVC only), SPS and PPS.
+/// carries the most recent VPS (HEVC only), SPS and PPS once each has been
+/// seen ([`ParameterSets::complete`]).
 pub fn access_units_for(codec: Codec, raw: &[u8]) -> Vec<AccessUnit> {
     let stream = normalize_start_codes(raw);
     let mut units = Vec::new();
     let mut current = PendingUnit::default();
-    let mut last = LastParameterSets::default();
+    let mut sets = ParameterSets::default();
 
     for nal in nal_units(&stream) {
         let ty = NalType::of_codec(codec, nal);
@@ -570,21 +626,9 @@ pub fn access_units_for(codec: Codec, raw: &[u8]) -> Vec<AccessUnit> {
             _ => false,
         };
         if starts_new_picture {
-            current.flush(&last, &mut units);
+            current.flush(codec, &mut sets, &mut units);
         }
         match ty {
-            Some(NalType::Vps) => {
-                last.vps = Some(nal.to_vec());
-                current.has_vps = true;
-            }
-            Some(NalType::Sps) => {
-                last.sps = Some(nal.to_vec());
-                current.has_sps = true;
-            }
-            Some(NalType::Pps) => {
-                last.pps = Some(nal.to_vec());
-                current.has_pps = true;
-            }
             Some(NalType::IdrSlice) => {
                 current.has_vcl = true;
                 current.is_idr = true;
@@ -595,7 +639,7 @@ pub fn access_units_for(codec: Codec, raw: &[u8]) -> Vec<AccessUnit> {
         current.annexb.extend_from_slice(&START_CODE);
         current.annexb.extend_from_slice(nal);
     }
-    current.flush(&last, &mut units);
+    current.flush(codec, &mut sets, &mut units);
     units
 }
 
@@ -888,5 +932,100 @@ mod tests {
         let units = access_units_for(Codec::Hevc, &raw);
         assert_eq!(units.len(), 3);
         assert_eq!(unit_nals(&units[2]), vec![vps, sps, pps, idr]);
+    }
+
+    fn annexb(nals: &[&[u8]]) -> Vec<u8> {
+        nals.iter()
+            .flat_map(|n| [&START_CODE[..], n].concat())
+            .collect()
+    }
+
+    fn idr(nals: &[&[u8]]) -> AccessUnit {
+        AccessUnit {
+            annexb: annexb(nals),
+            is_idr: true,
+        }
+    }
+
+    // HEVC NAL headers (type << 1): VPS, SPS, PPS, AUD, IDR_W_RADL (first slice).
+    const VPS: &[u8] = &[0x40, 0x01, 0xaa];
+    const VPS2: &[u8] = &[0x40, 0x01, 0xbb];
+    const SPS: &[u8] = &[0x42, 0x01, 0xaa];
+    const PPS: &[u8] = &[0x44, 0x01, 0xaa];
+    const AUD: &[u8] = &[0x46, 0x01, 0x50];
+    const IDR: &[u8] = &[0x26, 0x01, 0x80];
+
+    #[test]
+    fn hevc_idr_missing_some_parameter_sets_gets_them_in_order() {
+        let mut sets = ParameterSets::default();
+        let mut first = idr(&[VPS, SPS, PPS, IDR]);
+        sets.complete(Codec::Hevc, &mut first).unwrap();
+        assert_eq!(
+            first.annexb,
+            annexb(&[VPS, SPS, PPS, IDR]),
+            "complete: unchanged"
+        );
+
+        // Only the VPS is missing; it goes in front of the SPS it precedes.
+        let mut no_vps = idr(&[SPS, PPS, IDR]);
+        sets.complete(Codec::Hevc, &mut no_vps).unwrap();
+        assert_eq!(no_vps.annexb, annexb(&[VPS, SPS, PPS, IDR]));
+
+        // Only the SPS is missing, behind an AUD that must stay first.
+        let mut no_sps = idr(&[AUD, VPS2, PPS, IDR]);
+        sets.complete(Codec::Hevc, &mut no_sps).unwrap();
+        assert_eq!(no_sps.annexb, annexb(&[AUD, VPS2, SPS, PPS, IDR]));
+
+        // None at all: the newest of each.
+        let mut bare = idr(&[IDR]);
+        sets.complete(Codec::Hevc, &mut bare).unwrap();
+        assert_eq!(bare.annexb, annexb(&[VPS2, SPS, PPS, IDR]));
+    }
+
+    #[test]
+    fn idr_without_a_parameter_set_ever_seen_is_refused() {
+        let mut sets = ParameterSets::default();
+        assert_eq!(
+            sets.complete(Codec::Hevc, &mut idr(&[SPS, PPS, IDR])),
+            Err("VPS")
+        );
+        assert_eq!(sets.complete(Codec::Hevc, &mut idr(&[IDR])), Err("VPS"));
+        // The SPS and PPS it did carry are kept for later.
+        let mut later = idr(&[VPS, IDR]);
+        sets.complete(Codec::Hevc, &mut later).unwrap();
+        assert_eq!(later.annexb, annexb(&[VPS, SPS, PPS, IDR]));
+    }
+
+    #[test]
+    fn h264_idr_needs_no_vps() {
+        let (sps, pps, idr_slice): (&[u8], &[u8], &[u8]) =
+            (&[0x67, 0x42], &[0x68, 0xce], &[0x65, 0x88]);
+        let mut sets = ParameterSets::default();
+        assert_eq!(
+            sets.complete(Codec::H264, &mut idr(&[idr_slice])),
+            Err("SPS")
+        );
+        let mut full = idr(&[sps, pps, idr_slice]);
+        sets.complete(Codec::H264, &mut full).unwrap();
+        assert_eq!(full.annexb, annexb(&[sps, pps, idr_slice]));
+        let mut no_pps = idr(&[sps, idr_slice]);
+        sets.complete(Codec::H264, &mut no_pps).unwrap();
+        assert_eq!(no_pps.annexb, annexb(&[sps, pps, idr_slice]));
+    }
+
+    #[test]
+    fn a_filled_in_idr_keeps_its_access_unit_delimiter_first() {
+        // H.264: AUD, SPS, PPS, IDR; P; AUD, PPS, IDR (no SPS).
+        let (aud, sps, pps): (&[u8], &[u8], &[u8]) = (&[0x09, 0xf0], &[0x67, 0x42], &[0x68, 0xce]);
+        let (idr_slice, p): (&[u8], &[u8]) = (&[0x65, 0x88], &[0x41, 0x9a]);
+        let raw = annexb(&[aud, sps, pps, idr_slice, aud, p, aud, pps, idr_slice]);
+        let units = access_units(&raw);
+        assert_eq!(units.len(), 3);
+        assert_eq!(units[2].annexb, annexb(&[aud, sps, pps, idr_slice]));
+        // HEVC: an IDR with VPS and PPS gets the SPS between them.
+        let raw = annexb(&[VPS, SPS, PPS, IDR, VPS2, PPS, IDR]);
+        let units = access_units_for(Codec::Hevc, &raw);
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[1].annexb, annexb(&[VPS2, SPS, PPS, IDR]));
     }
 }
