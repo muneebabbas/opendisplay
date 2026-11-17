@@ -91,9 +91,8 @@ pub enum Dev {
         /// shared memory.
         #[arg(long)]
         gpu_decline_after: Option<f64>,
-        /// With `--gpu`: offer only LINEAR buffers (sets the development
-        /// hook OD_DEV_LINEAR_CAPTURE=1), so `--save` can read the last GPU
-        /// frame back through a dmabuf mmap. Debug builds only.
+        /// With `--gpu`: allocate only LINEAR buffers, so `--save` can read
+        /// the last GPU frame back through a dmabuf mmap.
         #[arg(long)]
         gpu_linear: bool,
     },
@@ -270,12 +269,12 @@ pub fn run(cmd: Dev) -> Result<()> {
             gpu_decline_after,
             gpu_linear,
         } => {
-            if gpu_linear {
-                // The capture reads the hook in debug builds only.
-                anyhow::ensure!(cfg!(debug_assertions), "--gpu-linear needs a debug build");
-                // SAFETY: set before this command starts any thread.
-                unsafe { std::env::set_var("OD_DEV_LINEAR_CAPTURE", "1") };
-            }
+            let gpu = match (gpu, gpu_linear) {
+                (true, true) => Some(crate::backend::GpuFrames::linear_only()),
+                (true, false) => Some(crate::backend::GpuFrames::new()),
+                (false, true) => bail!("--gpu-linear needs --gpu"),
+                (false, false) => None,
+            };
             capture_test(
                 output,
                 seconds,
@@ -604,7 +603,7 @@ fn capture_test(
     cursor: bool,
     save: Option<std::path::PathBuf>,
     protocol: crate::backend::capture::CaptureChoice,
-    gpu: bool,
+    gpu: Option<crate::backend::GpuFrames>,
     gpu_decline_after: Option<f64>,
 ) -> Result<()> {
     use crate::backend::capture::CaptureChoice;
@@ -628,7 +627,7 @@ fn capture_test(
             crate::wayland::screencopy::capture_wlr(name, cursor, duration, stop, keep)?
         }
         _ => {
-            let frames = gpu.then(crate::backend::GpuFrames::new);
+            let frames = gpu.clone();
             let opts = crate::backend::CaptureOptions {
                 cursor,
                 gpu: frames.clone(),
@@ -669,7 +668,7 @@ fn capture_test(
         }
     };
     info!("{n} frames captured");
-    if gpu {
+    if gpu.is_some() {
         info!(
             "{gpu_frames} of them in {} GPU buffers{}",
             gpu_ids.len(),

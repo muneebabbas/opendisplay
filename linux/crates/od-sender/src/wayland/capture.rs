@@ -28,7 +28,9 @@ use crate::backend::{
     CaptureEvent, CaptureOptions, Dmabuf, Frame, FrameBuf, FrameSink, GpuFrames, PixelFormat,
     Pixels,
 };
-use crate::dmabuf::{GbmBuffer, GbmDevice, drm_fourcc, importable_modifier, modifier_name};
+use crate::dmabuf::{
+    DRM_FORMAT_MOD_LINEAR, GbmBuffer, GbmDevice, drm_fourcc, importable_modifier, modifier_name,
+};
 use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, event_created_child};
 use wayland_protocols::ext::image_capture_source::v1::client::{
@@ -993,7 +995,7 @@ fn alloc_gpu(
     qh: &QueueHandle<State>,
     stop: &AtomicBool,
 ) -> Result<GpuAlloc> {
-    let choice = match pick_dmabuf(&st.session.current) {
+    let choice = match pick_dmabuf(&st.session.current, gpu.frames.is_linear_only()) {
         Ok(c) => c,
         Err(why) => return Ok(GpuAlloc::NotOffered(why)),
     };
@@ -1173,8 +1175,9 @@ struct DmabufChoice {
 
 /// Picks GPU buffers from the session's constraints: the device, the first
 /// of the formats the encoders read (in the shm order) with a modifier the
-/// encoder imports. `Err` says why there is none.
-fn pick_dmabuf(c: &Constraints) -> Result<DmabufChoice, String> {
+/// encoder imports, LINEAR only if `linear_only`. `Err` says why there is
+/// none.
+fn pick_dmabuf(c: &Constraints, linear_only: bool) -> Result<DmabufChoice, String> {
     let Some(device) = c.dmabuf_device else {
         return Err("the compositor offered no dmabuf device".into());
     };
@@ -1193,7 +1196,7 @@ fn pick_dmabuf(c: &Constraints) -> Result<DmabufChoice, String> {
             continue;
         };
         known = true;
-        let modifiers = importable_modifiers(offered);
+        let modifiers = importable_modifiers(offered, linear_only);
         if !modifiers.is_empty() {
             return Ok(DmabufChoice {
                 device,
@@ -1213,19 +1216,13 @@ fn pick_dmabuf(c: &Constraints) -> Result<DmabufChoice, String> {
 }
 
 /// The offered modifiers the VA-API encoder imports correctly
-/// ([`importable_modifier`]), without duplicates. `INVALID` (the driver's
-/// implicit choice) is dropped, as it may be a compressed layout.
-fn importable_modifiers(offered: &[u64]) -> Vec<u64> {
-    // Development hook (`od-sender dev capture-test --gpu-linear`): only
-    // LINEAR buffers, which the CPU can read back to compare pixels. Debug
-    // builds only, like OD_FAIL_DMABUF_IMPORT: never on a release stream.
-    #[cfg(debug_assertions)]
-    let linear_only = std::env::var_os("OD_DEV_LINEAR_CAPTURE").is_some_and(|v| v == "1");
-    #[cfg(not(debug_assertions))]
-    let linear_only = false;
+/// ([`importable_modifier`]), without duplicates, and only LINEAR if
+/// `linear_only`. `INVALID` (the driver's implicit choice) is dropped, as it
+/// may be a compressed layout.
+fn importable_modifiers(offered: &[u64], linear_only: bool) -> Vec<u64> {
     let mut out: Vec<u64> = Vec::new();
     for &m in offered {
-        if linear_only && m != 0 {
+        if linear_only && m != DRM_FORMAT_MOD_LINEAR {
             continue;
         }
         if importable_modifier(m) && !out.contains(&m) {
@@ -1337,7 +1334,7 @@ mod tests {
 
     #[test]
     fn xrgb_with_uncompressed_modifiers_is_chosen() {
-        let choice = pick_dmabuf(&hyprland()).unwrap();
+        let choice = pick_dmabuf(&hyprland(), false).unwrap();
         assert_eq!(choice.device, (226 << 8) | 128);
         assert_eq!(choice.format, PixelFormat::Xrgb8888);
         assert_eq!(
@@ -1349,38 +1346,46 @@ mod tests {
     #[test]
     fn compressed_implicit_and_foreign_modifiers_are_dropped() {
         assert_eq!(
-            importable_modifiers(&[LNL_CCS, DRM_FORMAT_MOD_INVALID, AMD_TILED]),
+            importable_modifiers(&[LNL_CCS, DRM_FORMAT_MOD_INVALID, AMD_TILED], false),
             Vec::<u64>::new()
         );
         assert_eq!(
-            importable_modifiers(&[AMD_TILED, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_MOD_LINEAR]),
+            importable_modifiers(
+                &[AMD_TILED, DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_MOD_LINEAR],
+                false
+            ),
             vec![DRM_FORMAT_MOD_LINEAR]
         );
         // Y_TILED_GEN12_RC_CCS: compressed.
-        assert!(importable_modifiers(&[0x0100_0000_0000_0006]).is_empty());
+        assert!(importable_modifiers(&[0x0100_0000_0000_0006], false).is_empty());
+        assert_eq!(
+            importable_modifiers(&[TILED_4, DRM_FORMAT_MOD_LINEAR, X_TILED], true),
+            vec![DRM_FORMAT_MOD_LINEAR]
+        );
+        assert!(importable_modifiers(&[TILED_4, X_TILED], true).is_empty());
     }
 
     #[test]
     fn no_gpu_buffers_without_a_device_or_an_importable_modifier() {
         let mut c = hyprland();
         c.dmabuf_device = None;
-        assert!(pick_dmabuf(&c).unwrap_err().contains("device"));
+        assert!(pick_dmabuf(&c, false).unwrap_err().contains("device"));
 
         let mut c = hyprland();
         c.dmabuf_formats = vec![(xr24(), vec![LNL_CCS, DRM_FORMAT_MOD_INVALID])];
         assert_eq!(
-            pick_dmabuf(&c).unwrap_err(),
+            pick_dmabuf(&c, false).unwrap_err(),
             "no modifier the encoder imports"
         );
 
         let mut c = hyprland();
         c.dmabuf_formats = vec![(u32::from_le_bytes(*b"NV12"), vec![0])];
-        assert!(pick_dmabuf(&c).unwrap_err().contains("NV12"));
+        assert!(pick_dmabuf(&c, false).unwrap_err().contains("NV12"));
 
         // A later format with a usable modifier wins over an unusable one.
         let mut c = hyprland();
         c.dmabuf_formats = vec![(xr24(), vec![LNL_CCS]), (ar24(), vec![TILED_4])];
-        let choice = pick_dmabuf(&c).unwrap();
+        let choice = pick_dmabuf(&c, false).unwrap();
         assert_eq!(choice.format, PixelFormat::Argb8888);
         assert_eq!(choice.modifiers, vec![TILED_4]);
     }

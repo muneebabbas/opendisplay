@@ -252,20 +252,39 @@ pub struct CaptureOptions {
 /// clears it when it cannot import them) and the capture thread (which then
 /// switches to shared-memory buffers for good).
 #[derive(Debug, Clone)]
-pub struct GpuFrames(Arc<AtomicBool>);
+pub struct GpuFrames {
+    wanted: Arc<AtomicBool>,
+    linear_only: bool,
+}
 
 impl GpuFrames {
     pub fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(true)))
+        Self {
+            wanted: Arc::new(AtomicBool::new(true)),
+            linear_only: false,
+        }
+    }
+
+    /// Only LINEAR buffers, which the CPU can read back
+    /// (`od-sender dev capture-test --gpu-linear`).
+    pub fn linear_only() -> Self {
+        Self {
+            linear_only: true,
+            ..Self::new()
+        }
     }
 
     pub fn wanted(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.wanted.load(Ordering::Relaxed)
     }
 
     /// No more GPU frames: capture falls back to shared memory.
     pub fn decline(&self) {
-        self.0.store(false, Ordering::Relaxed);
+        self.wanted.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_linear_only(&self) -> bool {
+        self.linear_only
     }
 }
 
