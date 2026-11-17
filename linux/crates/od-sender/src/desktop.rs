@@ -5,8 +5,8 @@
 //!
 //! * Panel facts come from `hello.panel` when it is valid (PROTOCOL.md §6.7),
 //!   else from the deprecated `pixelsWide/High/scale`.
-//! * The codec is the caller's choice ([`preferred_codec`] picks HEVC when
-//!   the receiver offers it and the sender can encode it, else H.264).
+//! * The codec is the caller's choice ([`preferred_codec`] says whether the
+//!   receiver offers HEVC; the caller knows whether it can encode it).
 //! * The stream is the output raster bounded by the panel's pixels and the
 //!   `videoCaps` entries for that codec (§6.5). For H.264 it is also bounded
 //!   by the legacy `maxEncodeWide/High` ceiling and the High@L5.2 frame-size
@@ -144,7 +144,7 @@ impl fmt::Display for PlanError {
                 write!(f, "receiver announced an unusable size {width}x{height}")
             }
             Self::NoCodecEntry(codec) => {
-                write!(f, "receiver does not offer {}", codec_name(*codec))
+                write!(f, "receiver does not offer {}", codec.name())
             }
             Self::NoCompatibleConfiguration => {
                 write!(f, "receiver advertised no usable stream configuration")
@@ -154,13 +154,6 @@ impl fmt::Display for PlanError {
 }
 
 impl std::error::Error for PlanError {}
-
-fn codec_name(codec: Codec) -> &'static str {
-    match codec {
-        Codec::H264 => "H.264",
-        Codec::Hevc => "HEVC",
-    }
-}
 
 impl fmt::Display for DesktopPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -236,19 +229,15 @@ fn panel_hz(hello: &Hello) -> u32 {
         .clamp(30, 240)
 }
 
-/// The codec to stream: HEVC when the sender can encode it and the receiver
-/// lists it in `videoCaps`, else H.264. Absent `videoCaps` (the legacy
-/// contract) never implies HEVC.
-pub fn preferred_codec(hello: &Hello, sender_encodes_hevc: bool) -> Codec {
+/// The codec the receiver prefers: HEVC when it lists it in `videoCaps`,
+/// else H.264. Absent `videoCaps` (the legacy contract) never implies HEVC.
+/// Whether the sender can encode HEVC is the caller's question.
+pub fn preferred_codec(hello: &Hello) -> Codec {
     let offered = hello.video_caps.as_ref().is_some_and(|caps| {
         caps.iter()
             .any(|c| Codec::from_token(&c.codec) == Some(Codec::Hevc))
     });
-    if sender_encodes_hevc && offered {
-        Codec::Hevc
-    } else {
-        Codec::H264
-    }
+    if offered { Codec::Hevc } else { Codec::H264 }
 }
 
 /// Plan the output and the stream for a receiver, for `codec`.
@@ -1022,20 +1011,19 @@ mod tests {
     }
 
     #[test]
-    fn preferred_codec_is_hevc_only_when_offered_and_encodable() {
+    fn preferred_codec_is_hevc_only_when_offered() {
         let mut h = fixture!("ipad-pro-12.9");
         h.video_caps = Some(vec![
             cap("h264", 2732, 2048, 60),
             cap("hevc", 2732, 2048, 60),
         ]);
-        assert_eq!(preferred_codec(&h, true), Codec::Hevc);
-        assert_eq!(preferred_codec(&h, false), Codec::H264);
+        assert_eq!(preferred_codec(&h), Codec::Hevc);
         h.video_caps = Some(vec![cap("HEVC", 2732, 2048, 60)]);
-        assert_eq!(preferred_codec(&h, true), Codec::Hevc);
+        assert_eq!(preferred_codec(&h), Codec::Hevc);
         h.video_caps = Some(vec![cap("h264", 2732, 2048, 60)]);
-        assert_eq!(preferred_codec(&h, true), Codec::H264);
+        assert_eq!(preferred_codec(&h), Codec::H264);
         h.video_caps = None;
-        assert_eq!(preferred_codec(&h, true), Codec::H264);
+        assert_eq!(preferred_codec(&h), Codec::H264);
     }
 
     #[test]

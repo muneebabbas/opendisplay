@@ -160,7 +160,7 @@ fn choose_plan(
     hevc_failed: bool,
     probe: impl FnOnce(u32, u32) -> bool,
 ) -> Result<DesktopPlan, PlanError> {
-    let offered = desktop::preferred_codec(hello, true) == Codec::Hevc;
+    let offered = desktop::preferred_codec(hello) == Codec::Hevc;
     if backend == encoder::Backend::Vaapi && !hevc_failed && offered {
         if let Ok(plan) = desktop::plan(hello, desktop, Codec::Hevc) {
             if probe(plan.stream.width, plan.stream.height) {

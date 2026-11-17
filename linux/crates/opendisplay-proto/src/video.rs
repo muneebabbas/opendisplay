@@ -12,10 +12,9 @@ use thiserror::Error;
 pub const START_CODE: [u8; 4] = [0, 0, 0, 1];
 
 /// A video codec the protocol negotiates (§6.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Codec {
     /// The legacy contract: every receiver decodes it.
-    #[default]
     H264,
     /// Offered by receivers with a hardware HEVC decoder (`hello.videoCaps`).
     Hevc,
@@ -27,6 +26,14 @@ impl Codec {
         match self {
             Codec::H264 => "h264",
             Codec::Hevc => "hevc",
+        }
+    }
+
+    /// The codec's usual name, for messages: `H.264`, `HEVC`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Codec::H264 => "H.264",
+            Codec::Hevc => "HEVC",
         }
     }
 

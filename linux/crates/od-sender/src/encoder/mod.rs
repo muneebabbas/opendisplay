@@ -74,13 +74,6 @@ impl Backend {
     }
 }
 
-fn codec_name(codec: Codec) -> &'static str {
-    match codec {
-        Codec::H264 => "H.264",
-        Codec::Hevc => "HEVC",
-    }
-}
-
 /// Whether a VA-API HEVC encoder opens at this size. Opens a throwaway one
 /// through the same constructor the stream uses, once per size per process;
 /// logs once per size when it does not.
@@ -214,7 +207,7 @@ impl Encoder {
         }
         bail!(
             "no {} encoder could be opened: {}",
-            codec_name(s.codec),
+            s.codec.name(),
             errors.join("; ")
         )
     }
