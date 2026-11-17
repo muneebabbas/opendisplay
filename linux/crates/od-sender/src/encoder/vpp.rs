@@ -359,7 +359,7 @@ unsafe impl Send for GpuConvert {}
 
 impl GpuConvert {
     /// Set up conversion into surfaces of `dst_frames` (the encoder's NV12
-    /// pool, on `device`), then check the driver gets the colours right.
+    /// pool, on `device`). Call [`Self::check`] before converting.
     pub fn new(
         device: *mut ff::ffi::AVBufferRef,
         dst_frames: *mut ff::ffi::AVBufferRef,
@@ -424,7 +424,7 @@ impl GpuConvert {
             bail!("av_buffer_ref failed");
         }
         // From here Drop releases everything.
-        let mut gpu = Self {
+        Ok(Self {
             va,
             display,
             config,
@@ -434,16 +434,21 @@ impl GpuConvert {
             height,
             sources: Vec::new(),
             direct_upload: true,
-        };
-        if let Err(e) = gpu.verify(dst_frames) {
+        })
+    }
+
+    /// Check that the driver gets the colours right, converting into
+    /// surfaces of `dst_frames`. On an error the converter must not be used,
+    /// but keep it until the encoder closes (see `FfmpegEncoder::gpu_failed`).
+    pub fn check(&mut self, dst_frames: *mut ff::ffi::AVBufferRef) -> Result<()> {
+        if let Err(e) = self.verify(dst_frames) {
             // A driver whose surface mapping is not what it says gets the
             // colours right through FFmpeg's upload, or not at all.
             debug!("VA-API: colour check with mapped uploads failed: {e:#}");
-            gpu.direct_upload = false;
-            gpu.verify(dst_frames)
-                .context("the driver's colour conversion is not BT.709 limited range")?;
+            self.direct_upload = false;
+            self.verify(dst_frames)?;
         }
-        Ok(gpu)
+        Ok(())
     }
 
     /// Convert one frame of capture pixels (`stride` bytes per row, at least
@@ -656,7 +661,10 @@ impl GpuConvert {
             ] {
                 let got = sample(&nv12, w / 2, at);
                 if got.iter().zip(want).any(|(g, w)| g.abs_diff(w) > 2) {
-                    bail!("{name} came out as {got:?} {format:?}, expected {want:?}");
+                    bail!(
+                        "not BT.709 limited range: {name} came out as {got:?} {format:?}, \
+                         expected {want:?}"
+                    );
                 }
             }
         }

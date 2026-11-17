@@ -21,7 +21,7 @@ use ff::format::Pixel;
 use ff::util::color;
 use ffmpeg_next as ff;
 use opendisplay_proto::video::{AccessUnit, NalType, access_units, nal_units};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use super::convert::{Converter, band_count};
 use super::stage::{YuvFrame, new_video, tag_bt709};
@@ -140,7 +140,8 @@ pub struct FfmpegEncoder {
     /// VA-API only: converts the capture's RGB to NV12 on the GPU, when the
     /// driver can. `None` means swscale does it, on the CPU.
     gpu: Option<GpuConvert>,
-    /// The GPU conversion failed once and is not used again. Its context is
+    /// The GPU conversion failed its check or a frame and is not used
+    /// again. Its context is
     /// kept until the encoder closes: with iHD, destroying a VPP context
     /// makes later CPU uploads to the same device fail (EIO).
     gpu_failed: bool,
@@ -266,7 +267,7 @@ impl FfmpegEncoder {
 
         let yuv = new_video(format, width, height);
 
-        let gpu = hw.as_ref().and_then(gpu_convert);
+        let (gpu, gpu_failed) = hw.as_ref().map_or((None, false), gpu_convert);
 
         Ok(Self {
             enc,
@@ -278,7 +279,7 @@ impl FfmpegEncoder {
             warned_no_sets: false,
             hw,
             gpu,
-            gpu_failed: false,
+            gpu_failed,
             steps: Steps::new(name),
         })
     }
@@ -520,18 +521,21 @@ impl FfmpegEncoder {
 }
 
 /// Set up GPU colour conversion for a VA-API encoder, or say why not and
-/// leave it to swscale.
-fn gpu_convert(hw: &HwFrames) -> Option<GpuConvert> {
-    // Development knob for A/B benchmarks: force the CPU path.
-    if std::env::var_os("OD_VAAPI_CPU_CONVERT").is_some_and(|v| v == "1") {
-        info!("VA-API: colour conversion on the CPU (OD_VAAPI_CPU_CONVERT=1)");
-        return None;
-    }
-    match GpuConvert::new(hw.device, hw.frames) {
-        Ok(g) => Some(g),
+/// leave it to swscale. A converter that fails its colour check comes back
+/// marked failed (`true`) rather than dropped: see `FfmpegEncoder::gpu_failed`.
+fn gpu_convert(hw: &HwFrames) -> (Option<GpuConvert>, bool) {
+    let mut gpu = match GpuConvert::new(hw.device, hw.frames) {
+        Ok(g) => g,
         Err(e) => {
             warn!("VA-API: GPU colour conversion unavailable, converting on the CPU: {e:#}");
-            None
+            return (None, false);
+        }
+    };
+    match gpu.check(hw.frames) {
+        Ok(()) => (Some(gpu), false),
+        Err(e) => {
+            warn!("VA-API: GPU colour conversion failed its check, converting on the CPU: {e:#}");
+            (Some(gpu), true)
         }
     }
 }
@@ -745,20 +749,26 @@ mod tests {
         let hw = match HwFrames::new(w, h) {
             Ok(hw) => hw,
             Err(e) => {
-                eprintln!("skipped: VA-API unavailable here ({e:#})");
+                eprintln!("skipped: no VA-API device here ({e:#})");
                 return None;
             }
         };
-        match GpuConvert::new(hw.device, hw.frames) {
-            Ok(g) => Some((hw, g)),
+        let mut g = match GpuConvert::new(hw.device, hw.frames) {
+            Ok(g) => g,
             Err(e) => {
-                let why = format!("{e:#}");
-                // A driver that converts, but wrongly, is a failure.
-                assert!(!why.contains("BT.709"), "{why}");
-                eprintln!("skipped: no GPU colour conversion here ({why})");
-                None
+                eprintln!("skipped: no GPU colour conversion here ({e:#})");
+                return None;
             }
+        };
+        if let Err(e) = g.check(hw.frames) {
+            let why = format!("{e:#}");
+            // A driver that converts, but wrongly, is a failure; one that
+            // cannot run the check at all (a decode-only driver) is a skip.
+            assert!(!why.contains("not BT.709"), "{why}");
+            eprintln!("skipped: GPU colour conversion does not run here ({why})");
+            return None;
         }
+        Some((hw, g))
     }
 
     #[test]
