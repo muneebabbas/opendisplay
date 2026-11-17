@@ -209,6 +209,15 @@ fn stream_for(info: &DisplayInfo, target: &Target) -> StreamPlan {
     }
 }
 
+/// What one `run` carries from connection to connection.
+#[derive(Default)]
+struct RunState {
+    /// Displays lost under the session; too many end the run.
+    losses: LossBudget,
+    /// HEVC failed at some point: H.264 from then on, reconnects too.
+    hevc_failed: bool,
+}
+
 /// How often a display that vanished under the session (output removed,
 /// capture stopped by the compositor) is recreated before giving up.
 pub struct LossBudget {
@@ -765,9 +774,7 @@ pub async fn run(addr: SocketAddr, backend: &mut dyn Backend, opts: RunOptions) 
     );
     let mut shutdown = shutdown_signal()?;
     backend.set_cursor_visible(opts.cursor != CursorMode::Off);
-    let mut losses = LossBudget::default();
-    // HEVC failed at some point in this run: H.264 from then on, reconnects too.
-    let mut hevc_failed = false;
+    let mut state = RunState::default();
     let mut backoff = Backoff::default();
     if let Some(id) = &opts.receiver_id {
         if let Some(held) = pre_dial_conflict(backend, id, opts.position)? {
@@ -794,8 +801,7 @@ pub async fn run(addr: SocketAddr, backend: &mut dyn Backend, opts: RunOptions) 
                     &opts,
                     start,
                     shutdown.clone(),
-                    &mut losses,
-                    &mut hevc_failed,
+                    &mut state,
                     Some(addr),
                 )
                 .await;
@@ -962,16 +968,13 @@ fn extending_line(receiver: &str, info: &DisplayInfo, position: Position) -> Str
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn session<S: AsyncRead + AsyncWrite + Unpin>(
     mut stream: S,
     backend: &mut dyn Backend,
     opts: &RunOptions,
     start: Instant,
     mut shutdown: watch::Receiver<bool>,
-    losses: &mut LossBudget,
-    // Set once HEVC fails; lasts for the whole `run`, across reconnects.
-    hevc_failed: &mut bool,
+    state: &mut RunState,
     peer: Option<SocketAddr>,
 ) -> Result<SessionEnd> {
     let mut sess = SenderSession::new(SenderConfig::default());
@@ -1030,7 +1033,7 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
                         let target = active.as_ref().map(|a| a.target.clone()).expect("lost implies active");
                         let name = target.spec.name.clone();
                         warn!("virtual display {name} lost: {why}");
-                        if !losses.allow(Instant::now()) {
+                        if !state.losses.allow(Instant::now()) {
                             warn!("{name} lost too often; closing the connection");
                             return Ok(SessionEnd::DisplayLost);
                         }
@@ -1048,7 +1051,7 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
                         vec![]
                     }
                     DisplayEvent::CodecFailed(why) => {
-                        *hevc_failed = true;
+                        state.hevc_failed = true;
                         warn!("HEVC encoder failed ({why}); switching to H.264 for the rest of this run");
                         // The newest hello decides; this is no display loss.
                         let Some(h) = sess.hello().cloned() else { continue };
@@ -1201,7 +1204,7 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
                             Some(opts.receiver_name.as_str()),
                             h.device.as_deref(),
                         ]);
-                        let t = match target(&h, &ropts, *hevc_failed) {
+                        let t = match target(&h, &ropts, state.hevc_failed) {
                             Ok(t) => t,
                             Err(e) => {
                                 warn!("cannot plan a desktop for this receiver: {e}; closing the connection");
@@ -1665,15 +1668,13 @@ mod tests {
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut backend = FakeBackend(shared.clone());
         let session_task = tokio::spawn(async move {
-            let mut budget = LossBudget::default();
             session(
                 sender_io,
                 &mut backend,
                 &opts(),
                 Instant::now(),
                 shutdown_rx,
-                &mut budget,
-                &mut false,
+                &mut RunState::default(),
                 None,
             )
             .await
@@ -1951,7 +1952,6 @@ mod tests {
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut backend = FakeBackend(shared.clone());
         let task = tokio::spawn(async move {
-            let mut budget = LossBudget::default();
             let o = RunOptions {
                 encoder: crate::encoder::Backend::Openh264,
                 ..opts()
@@ -1962,8 +1962,7 @@ mod tests {
                 &o,
                 Instant::now(),
                 shutdown_rx,
-                &mut budget,
-                &mut false,
+                &mut RunState::default(),
                 None,
             )
             .await
@@ -2052,15 +2051,13 @@ mod tests {
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut backend = FakeBackend(shared.clone());
         let task = tokio::spawn(async move {
-            let mut budget = LossBudget::default();
             session(
                 sender_io,
                 &mut backend,
                 &opts(),
                 Instant::now(),
                 shutdown_rx,
-                &mut budget,
-                &mut false,
+                &mut RunState::default(),
                 None,
             )
             .await
@@ -2123,15 +2120,13 @@ mod tests {
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut backend = FakeBackend(shared.clone());
         let task = tokio::spawn(async move {
-            let mut budget = LossBudget::default();
             session(
                 sender_io,
                 &mut backend,
                 &opts(),
                 Instant::now(),
                 shutdown_rx,
-                &mut budget,
-                &mut false,
+                &mut RunState::default(),
                 None,
             )
             .await
@@ -2182,15 +2177,13 @@ mod tests {
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut backend = FakeBackend(shared.clone());
         let task = tokio::spawn(async move {
-            let mut budget = LossBudget::default();
             session(
                 sender_io,
                 &mut backend,
                 &opts(),
                 Instant::now(),
                 shutdown_rx,
-                &mut budget,
-                &mut false,
+                &mut RunState::default(),
                 None,
             )
             .await
