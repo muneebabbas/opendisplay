@@ -955,44 +955,13 @@ mod tests {
             }
             let stride = cw * 4;
             let px = vec![0x40u8; (stride * ch) as usize];
-            let mut times = Vec::new();
             for i in 0..12 {
-                let t = Instant::now();
                 let units = e
                     .encode(&px, stride, PixelFormat::Xrgb8888, i == 0, Instant::now())
                     .unwrap();
-                times.push(t.elapsed().as_secs_f64() * 1000.0);
                 assert_eq!(units.len(), 1, "{w}x{h} frame {i}");
                 assert_eq!(units[0].unit.is_idr, i == 0, "{w}x{h} frame {i}");
             }
-            times.sort_by(f64::total_cmp);
-            eprintln!("{w}x{h}: encode call p50 {:.2} ms", times[times.len() / 2]);
-
-            // The conversion alone: upload, VPP and a read back (informational).
-            let Some((hw, mut g)) = gpu(w, h) else { return };
-            let dst = hw_surface(hw.frames).unwrap();
-            let mut conv = Vec::new();
-            for _ in 0..30 {
-                let t = Instant::now();
-                let src = g
-                    .convert(
-                        &dst,
-                        &px,
-                        stride,
-                        PixelFormat::Xrgb8888,
-                        &mut Steps::new("test"),
-                    )
-                    .unwrap();
-                // Mapping the output waits for the conversion.
-                download(&dst).unwrap();
-                drop(src);
-                conv.push(t.elapsed().as_secs_f64() * 1000.0);
-            }
-            conv.sort_by(f64::total_cmp);
-            eprintln!(
-                "{w}x{h}: GPU convert and read back p50 {:.2} ms",
-                conv[conv.len() / 2]
-            );
         }
     }
 }
