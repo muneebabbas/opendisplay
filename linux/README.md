@@ -30,8 +30,7 @@ are then also captured into GPU buffers (dmabufs) that the encoder reads
 directly, so the CPU never touches a pixel. If the encoder cannot import
 them, capture falls back to shared memory for the rest of the run; if the
 compositor fails them, until the capture restarts (a reconnect tries GPU
-buffers again). `OD_VAAPI_SHM_CAPTURE=1` forces shared memory, for
-comparisons.
+buffers again).
 
 The other direction, a Linux machine as the display, is the
 [Linux receiver](#linux-receiver-beta), also in beta.

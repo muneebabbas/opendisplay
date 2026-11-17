@@ -126,19 +126,10 @@ pub fn can_encode_hevc(width: u32, height: u32) -> bool {
 static GPU_CAPTURE_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Whether a stream on `backend` should ask the capture for GPU buffers:
-/// VA-API only, unless `OD_VAAPI_SHM_CAPTURE=1` (for A/B benchmarks) or a GPU
-/// frame already failed in this run. The encoder still has the last word
-/// ([`Encoder::takes_dmabuf`]).
+/// VA-API only, unless a GPU frame already failed in this run. The encoder
+/// still has the last word ([`Encoder::takes_dmabuf`]).
 pub fn gpu_capture_wanted(backend: Backend) -> bool {
-    if backend != Backend::Vaapi || GPU_CAPTURE_FAILED.load(Ordering::Relaxed) {
-        return false;
-    }
-    if std::env::var_os("OD_VAAPI_SHM_CAPTURE").is_some_and(|v| v == "1") {
-        static LOGGED: std::sync::Once = std::sync::Once::new();
-        LOGGED.call_once(|| info!("capture: shared memory (OD_VAAPI_SHM_CAPTURE=1)"));
-        return false;
-    }
-    true
+    backend == Backend::Vaapi && !GPU_CAPTURE_FAILED.load(Ordering::Relaxed)
 }
 
 /// A GPU frame failed to encode: no more GPU capture in this run.

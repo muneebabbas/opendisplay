@@ -625,12 +625,6 @@ impl GpuConvert {
                 self.height
             );
         }
-        // Test hook, debug builds only, like OD_FAIL_HEVC_*: refuse every GPU
-        // frame to exercise the fallback to shared-memory capture.
-        #[cfg(debug_assertions)]
-        if std::env::var_os("OD_FAIL_DMABUF_IMPORT").is_some_and(|v| v == "1") {
-            bail!("OD_FAIL_DMABUF_IMPORT=1");
-        }
         let src = self.imported(frame)?;
         steps.lap("import");
         self.run(src, surface_id(dst))?;
