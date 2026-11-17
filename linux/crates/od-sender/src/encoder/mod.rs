@@ -21,8 +21,8 @@
 //! With VA-API the capture can also hand over GPU buffers (dmabufs) instead
 //! of pixels in shared memory: the GPU imports them as surfaces and converts
 //! and encodes them without the CPU touching a pixel ([`gpu_capture_wanted`],
-//! [`Encoder::takes_dmabuf`]). Where that fails the capture falls back to
-//! shared memory for the rest of the run.
+//! [`Encoder::takes_dmabuf`]). A GPU frame the encoder cannot take keeps
+//! the capture in shared memory for the rest of the run.
 //!
 //! VA-API also encodes HEVC (`hevc_vaapi`, Main profile, the same low-latency
 //! settings), the only backend that does. The session picks the codec when
