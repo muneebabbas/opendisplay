@@ -389,7 +389,7 @@ impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, u64> 
 impl Dispatch<zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1, u64> for State {
     fn event(
         state: &mut Self,
-        _: &zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
+        params: &zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
         event: zwp_linux_buffer_params_v1::Event,
         serial: &u64,
         _: &Connection,
@@ -401,10 +401,15 @@ impl Dispatch<zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1, u64> for State
             Event::Created { buffer } if current => {
                 state.params = Some(ParamsOutcome::Created(buffer))
             }
-            // An answer after the allocation gave up (timeout or stop):
-            // nobody owns this buffer.
-            Event::Created { buffer } => buffer.destroy(),
+            // An answer after the allocation gave up (timeout or stop),
+            // which left the params alive to receive it: nobody owns the
+            // buffer or the params any more.
+            Event::Created { buffer } => {
+                buffer.destroy();
+                params.destroy();
+            }
             Event::Failed if current => state.params = Some(ParamsOutcome::Failed),
+            Event::Failed => params.destroy(),
             _ => {}
         }
     }
@@ -1052,8 +1057,10 @@ fn alloc_gpu(
         if let Some(o) = st.params.take() {
             break Some(o);
         }
+        // Giving up keeps the params: destroyed now, the compositor's
+        // answer would never reach us, and a `wl_buffer` it still creates
+        // would be leaked. The event handler destroys both when it comes.
         if stop.load(Ordering::Relaxed) || st.session.stopped {
-            params.destroy();
             st.params_serial += 1;
             return Ok(GpuAlloc::Interrupted);
         }
@@ -1062,7 +1069,9 @@ fn alloc_gpu(
         }
         dispatch_with_timeout(conn, queue, st, Duration::from_millis(50))?;
     };
-    params.destroy();
+    if outcome.is_some() {
+        params.destroy();
+    }
     st.params_serial += 1;
     let modifier = modifier_name(gbm.modifier);
     match outcome {
