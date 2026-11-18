@@ -120,6 +120,19 @@ pub fn can_encode_hevc(width: u32, height: u32) -> bool {
     ok
 }
 
+/// Context of an [`Encoder::encode`] error for a GPU frame the encoder could
+/// not take (no GPU conversion, or the import or conversion failed), as
+/// against one it failed to encode: the capture can switch to shared memory
+/// and the same encoder goes on. Test with `error.is::<GpuFrameRefused>()`.
+#[derive(Debug)]
+pub struct GpuFrameRefused;
+
+impl std::fmt::Display for GpuFrameRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the encoder cannot take this GPU frame")
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct EncoderSettings {
     pub backend: Backend,
@@ -309,7 +322,9 @@ impl Encoder {
             (FrameBuf::Dmabuf(d), Imp::Ffmpeg(e)) if e.gpu_convert() => {
                 e.encode_dmabuf(d, force_idr, frame.captured_at)
             }
-            (FrameBuf::Dmabuf(_), _) => bail!("{} cannot encode GPU frames", self.label()),
+            (FrameBuf::Dmabuf(_), _) => {
+                Err(anyhow!("{} cannot encode GPU frames", self.label()).context(GpuFrameRefused))
+            }
         }
     }
 }
@@ -339,5 +354,32 @@ mod tests {
                 "{backend:?}: {e:#}"
             );
         }
+    }
+
+    #[test]
+    fn a_gpu_frame_is_refused_not_failed_without_the_gpu_conversion() {
+        let s = EncoderSettings {
+            backend: Backend::Openh264,
+            codec: Codec::H264,
+            bitrate_bps: 2_000_000,
+            max_fps: 60.0,
+            threads: 1,
+        };
+        let mut e = Encoder::new(320, 240, s).unwrap();
+        let frame = Frame {
+            captured_at: Instant::now(),
+            presentation_ns: None,
+            buf: FrameBuf::Dmabuf(crate::backend::Dmabuf {
+                width: 320,
+                height: 240,
+                format: crate::backend::PixelFormat::Xrgb8888,
+                modifier: 0,
+                planes: Vec::new(),
+                id: 1,
+                hold: std::sync::Arc::new(()),
+            }),
+        };
+        let err = e.encode(&frame, true).err().expect("a GPU frame");
+        assert!(err.is::<GpuFrameRefused>(), "{err:#}");
     }
 }

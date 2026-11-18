@@ -20,12 +20,12 @@ use tracing::{debug, info, warn};
 
 use crate::backend::lock::{self, LockHeld};
 use crate::backend::{
-    Backend, CaptureEvent, CaptureOptions, CursorEvent, DisplayInfo, DisplaySpec, Frame, FrameBuf,
-    FrameSink, GpuFrames, InputSink, Position, VirtualDisplay,
+    Backend, CaptureEvent, CaptureOptions, CursorEvent, DisplayInfo, DisplaySpec, Frame, FrameSink,
+    GpuFrames, InputSink, Position, VirtualDisplay,
 };
 use crate::config::{self, Config, Layer};
 use crate::desktop::{self, Debounce, DesktopOptions, DesktopPlan, PlanError, StreamPlan};
-use crate::encoder::{self, ConvertStage, Encoded, Encoder, EncoderSettings};
+use crate::encoder::{self, ConvertStage, Encoded, Encoder, EncoderSettings, GpuFrameRefused};
 use crate::latest;
 use crate::wayland::cursor::base64;
 use opendisplay_proto::video::Codec;
@@ -416,24 +416,27 @@ impl EncodePipeline {
                 }
                 let force = enc_force.swap(false, Ordering::Relaxed);
                 let result = encoder.as_mut().unwrap().encode(&frame, force);
-                if let (Err(e), FrameBuf::Dmabuf(_), Some(g)) = (&result, &frame.buf, &enc_gpu) {
-                    // Not retried: capture switches to shared memory for the
-                    // rest of the run (also when the encoder could never take
-                    // GPU frames, as decided above) and the next frame is an
-                    // IDR from there.
-                    if g.wanted() {
-                        warn!(
-                            "encoding a GPU frame failed, capturing into shared memory from now on: {e:#}"
-                        );
-                    } else {
-                        debug!("GPU frame dropped while capture switches to shared memory: {e:#}");
+                // A GPU frame the encoder could not take (not one it failed
+                // to encode, which counts as any failure below) is not
+                // retried: capture switches to shared memory for the rest of
+                // the run (also when the encoder could never take GPU frames,
+                // as decided above) and the next frame is an IDR from there.
+                if let (Err(e), Some(g)) = (&result, &enc_gpu) {
+                    if e.is::<GpuFrameRefused>() {
+                        if g.wanted() {
+                            warn!(
+                                "encoding a GPU frame failed, capturing into shared memory from now on: {e:#}"
+                            );
+                            let _ = gpu_failed_tx.send(format!("{e:#}"));
+                        } else {
+                            debug!(
+                                "GPU frame dropped while capture switches to shared memory: {e:#}"
+                            );
+                        }
+                        g.decline();
+                        enc_force.store(true, Ordering::Relaxed);
+                        continue;
                     }
-                    if g.wanted() {
-                        let _ = gpu_failed_tx.send(format!("{e:#}"));
-                    }
-                    g.decline();
-                    enc_force.store(true, Ordering::Relaxed);
-                    continue;
                 }
                 match result {
                     Ok(units) => {

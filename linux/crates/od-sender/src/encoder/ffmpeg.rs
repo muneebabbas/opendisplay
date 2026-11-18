@@ -30,7 +30,7 @@ use super::convert::{Converter, band_count};
 use super::stage::{YuvFrame, new_video, tag_bt709};
 use super::steps::Steps;
 use super::vpp::{GpuConvert, hw_surface, new_pool};
-use super::{Encoded, EncoderSettings};
+use super::{Encoded, EncoderSettings, GpuFrameRefused};
 use crate::backend::{Dmabuf, PixelFormat};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,6 +376,14 @@ impl FfmpegEncoder {
     ) -> Result<Vec<Encoded>> {
         let t0 = Instant::now();
         self.steps.start();
+        let mut surface = self.convert_dmabuf(frame).context(GpuFrameRefused)?;
+        tag_bt709(&mut surface);
+        let hold = Hold::Capture(frame.hold.clone());
+        self.send(&mut surface, Some(hold), force_idr, captured_at, t0)
+    }
+
+    /// `frame` converted into a surface of the encoder's pool.
+    fn convert_dmabuf(&mut self, frame: &Dmabuf) -> Result<ff::frame::Video> {
         let (Some(gpu), false) = (&mut self.gpu, self.gpu_failed) else {
             bail!("GPU frames need the GPU colour conversion");
         };
@@ -383,11 +391,9 @@ impl FfmpegEncoder {
             .hw
             .as_ref()
             .ok_or_else(|| anyhow!("no VA-API surfaces"))?;
-        let mut surface = hw_surface(hw.frames)?;
+        let surface = hw_surface(hw.frames)?;
         gpu.convert_dmabuf(&surface, frame, &mut self.steps)?;
-        tag_bt709(&mut surface);
-        let hold = Hold::Capture(frame.hold.clone());
-        self.send(&mut surface, Some(hold), force_idr, captured_at, t0)
+        Ok(surface)
     }
 
     /// Encode a frame the convert stage already converted. The encoder takes
@@ -1440,6 +1446,7 @@ mod tests {
             panic!("a smaller frame was encoded");
         };
         assert!(format!("{err:#}").contains("cannot fill"), "{err:#}");
+        assert!(err.is::<GpuFrameRefused>(), "{err:#}");
         // A compressed layout, which iHD would turn black without an error.
         // The memory is linear; the label alone must be refused.
         let b = red_over_blue(&dev, w, h, PixelFormat::Xrgb8888, &[DRM_FORMAT_MOD_LINEAR]).unwrap();
@@ -1452,6 +1459,7 @@ mod tests {
         };
         let msg = format!("{err:#}");
         assert!(msg.contains("I915_4_TILED_LNL_CCS"), "{msg}");
+        assert!(err.is::<GpuFrameRefused>(), "{msg}");
         // The GPU conversion of system-memory frames is still on.
         assert!(e.gpu_convert());
         let (px, stride) = frame(w, h, 0);
