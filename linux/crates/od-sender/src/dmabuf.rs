@@ -34,6 +34,13 @@ const GBM_BO_TRANSFER_WRITE: u32 = 1 << 1;
 
 pub const DRM_FORMAT_MOD_LINEAR: u64 = 0;
 pub const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+pub const I915_X_TILED: u64 = 0x0100_0000_0000_0001;
+pub const I915_Y_TILED: u64 = 0x0100_0000_0000_0002;
+pub const I915_YF_TILED: u64 = 0x0100_0000_0000_0003;
+pub const I915_4_TILED: u64 = 0x0100_0000_0000_0009;
+/// Compressed: imports on iHD, then converts into a black picture.
+#[cfg(test)]
+pub const I915_4_TILED_LNL_CCS: u64 = 0x0100_0000_0000_0010;
 
 /// `struct gbm_device`.
 #[repr(C)]
@@ -455,13 +462,12 @@ impl GbmDevice {
 /// black picture, and gbm picks it whenever it is offered. Other
 /// vendors' tilings are untested, so only linear for them.
 pub fn importable_modifier(modifier: u64) -> bool {
-    const INTEL: u64 = 0x01 << 56;
     const ALLOWED: [u64; 5] = [
         DRM_FORMAT_MOD_LINEAR,
-        INTEL | 1, // I915_X_TILED
-        INTEL | 2, // I915_Y_TILED
-        INTEL | 3, // I915_Yf_TILED
-        INTEL | 9, // I915_4_TILED
+        I915_X_TILED,
+        I915_Y_TILED,
+        I915_YF_TILED,
+        I915_4_TILED,
     ];
     ALLOWED.contains(&modifier)
 }
@@ -593,9 +599,9 @@ mod tests {
     fn modifier_names() {
         assert_eq!(modifier_name(0), "LINEAR");
         assert_eq!(modifier_name(DRM_FORMAT_MOD_INVALID), "INVALID");
-        assert_eq!(modifier_name(0x0100_0000_0000_0001), "I915_X_TILED");
-        assert_eq!(modifier_name(0x0100_0000_0000_0009), "I915_4_TILED");
-        assert_eq!(modifier_name(0x0100_0000_0000_0010), "I915_4_TILED_LNL_CCS");
+        assert_eq!(modifier_name(I915_X_TILED), "I915_X_TILED");
+        assert_eq!(modifier_name(I915_4_TILED), "I915_4_TILED");
+        assert_eq!(modifier_name(I915_4_TILED_LNL_CCS), "I915_4_TILED_LNL_CCS");
         assert_eq!(
             modifier_name(0x0200_0000_0000_0123),
             "AMD(0x200000000000123)"
@@ -609,7 +615,7 @@ mod tests {
         let dev = match GbmDevice::open(node) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("skipping: {e:#}");
+                eprintln!("skipped: no gbm device here ({e:#})");
                 return;
             }
         };
@@ -623,7 +629,7 @@ mod tests {
         // Not every GPU allocates every list (NVIDIA refuses an explicit
         // LINEAR), but filling must work wherever allocating does, in a
         // layout from the list.
-        for mods in [&[DRM_FORMAT_MOD_LINEAR][..], &[0x0100_0000_0000_0009, 0]] {
+        for mods in [&[DRM_FORMAT_MOD_LINEAR][..], &[I915_4_TILED, 0]] {
             let Ok(b) = dev.alloc(w, h, fmt, mods) else {
                 continue;
             };

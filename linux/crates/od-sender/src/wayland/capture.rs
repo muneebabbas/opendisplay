@@ -242,8 +242,9 @@ struct State {
     source_mgr:
         Option<ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1>,
     capture_mgr: Option<ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1>,
-    /// Bound only when GPU buffers are asked for; with its version.
+    /// Bound only when GPU buffers are asked for.
     bind_dmabuf: bool,
+    /// With its version.
     linux_dmabuf: Option<(zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, u32)>,
     session: SessionInfo,
     /// Events of sessions and frames destroyed before their events were
@@ -595,6 +596,13 @@ impl Gpu {
         !self.unusable && self.frames.wanted()
     }
 
+    /// GPU buffers do not work here: this capture stays on shared memory.
+    fn give_up(&mut self, why: &str) {
+        warn!("capture: GPU buffers do not work ({why}); shared memory until the capture restarts");
+        self.unusable = true;
+        self.logged = Some(format!("capture: shared memory ({why})"));
+    }
+
     fn log_mode(&mut self, line: String) {
         if self.logged.as_ref() != Some(&line) {
             info!("{line}");
@@ -814,11 +822,7 @@ pub fn capture(
                                 }
                             }
                             GpuAlloc::Broken(why) => {
-                                warn!(
-                                    "capture: GPU buffers do not work ({why}); shared memory from now on"
-                                );
-                                g.unusable = true;
-                                g.logged = Some(format!("capture: shared memory ({why})"));
+                                g.give_up(&why);
                                 if on_gpu == Some(true) {
                                     restart_on_shm!();
                                 }
@@ -942,11 +946,9 @@ pub fn capture(
             let after = after_failure(reason);
             if let (true, Some(g)) = (on_gpu, gpu.as_mut()) {
                 if g.failures.failed(&after) {
-                    warn!(
-                        "capture: {GPU_FAILURES_BEFORE_SHM} frames in a row failed in GPU buffers; shared memory from now on"
-                    );
-                    g.unusable = true;
-                    g.logged = Some("capture: shared memory (GPU frames fail)".into());
+                    g.give_up(&format!(
+                        "{GPU_FAILURES_BEFORE_SHM} frames in a row failed in new buffers"
+                    ));
                     restart_on_shm!();
                 }
             }
@@ -1281,9 +1283,9 @@ mod tests {
     use crate::dmabuf::{DRM_FORMAT_MOD_INVALID, DRM_FORMAT_MOD_LINEAR};
     use ext_image_copy_capture_frame_v1::FailureReason;
 
-    const X_TILED: u64 = 0x0100_0000_0000_0001;
-    const TILED_4: u64 = 0x0100_0000_0000_0009;
-    const LNL_CCS: u64 = 0x0100_0000_0000_0010;
+    use crate::dmabuf::{
+        I915_4_TILED as TILED_4, I915_4_TILED_LNL_CCS as LNL_CCS, I915_X_TILED as X_TILED,
+    };
     const AMD_TILED: u64 = 0x0200_0000_0000_1234;
 
     fn xr24() -> u32 {

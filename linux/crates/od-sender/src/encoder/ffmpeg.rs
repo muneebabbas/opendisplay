@@ -611,7 +611,10 @@ fn pick_format(codec: &ff::Codec, kind: Kind) -> Pixel {
 mod tests {
     use super::*;
     use crate::backend::{Frame, FrameBuf, Pixels};
-    use crate::dmabuf::{DRM_FORMAT_MOD_LINEAR, GbmBuffer, GbmDevice, modifier_name};
+    use crate::dmabuf::{
+        DRM_FORMAT_MOD_LINEAR, GbmBuffer, GbmDevice, I915_4_TILED, I915_4_TILED_LNL_CCS,
+        modifier_name,
+    };
     use crate::encoder::vpp::{download, sample};
     use crate::encoder::{Backend, Encoder};
     use opendisplay_proto::video::nal_units;
@@ -623,9 +626,6 @@ mod tests {
         max_fps: 60.0,
         threads: 1,
     };
-
-    const I915_4_TILED: u64 = 0x0100_0000_0000_0009;
-    const I915_4_TILED_LNL_CCS: u64 = 0x0100_0000_0000_0010;
 
     /// A gbm device on the first render node, or why the test skips.
     fn gbm_device() -> Option<GbmDevice> {
