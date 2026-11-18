@@ -35,6 +35,13 @@ empty release. No receiver Flatpak, Mac or Android builds. It can also be
 started with `workflow_dispatch` and an existing tag. It never runs in the
 upstream repository, and no upstream file is modified.
 
+The x86_64 build differs from upstream on purpose: FFmpeg is built with
+`FFMPEG_VAAPI=1`, so `h264_vaapi` and `hevc_vaapi` are linked in and the binary
+needs `libva.so.2`, `libva-drm.so.2` and `libdrm.so.2` at runtime. VA-API is
+still opt-in at runtime: `encoder = "vaapi"` in `sender.toml` (or
+`--encoder vaapi`). Pull requests touching the workflow or the FFmpeg script
+build and smoke-test without releasing.
+
 Its `sender` job copies the `build` job of `linux-release.yml`. After syncing
 upstream, check that job for changes (FFmpeg build, symbol floors, packaging)
 and carry them over.

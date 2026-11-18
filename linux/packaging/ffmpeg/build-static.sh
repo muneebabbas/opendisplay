@@ -11,8 +11,8 @@
 # Only what od-sender uses is enabled: the libx264 and h264_v4l2m2m encoders,
 # swscale, and the avformat library (ffmpeg-next will not build without it;
 # no muxers or protocols). Autodetection is off so no system library sneaks
-# into the link. FFMPEG_VAAPI=1 adds h264_vaapi, which links libva/libdrm
-# dynamically (for a later x86 VA-API encoder; unused today).
+# into the link. FFMPEG_VAAPI=1 adds h264_vaapi and hevc_vaapi, which link
+# libva/libdrm dynamically (the x86 VA-API encoder, --encoder vaapi).
 #
 # Inputs are pinned by commit and the CI cache is keyed on this file's hash,
 # so bumping a version below rebuilds everywhere.
@@ -52,7 +52,7 @@ fetch https://github.com/FFmpeg/FFmpeg.git "${FFMPEG_COMMIT}" "${work}/ffmpeg" "
 encoders=libx264,h264_v4l2m2m
 extra=()
 if [ "${FFMPEG_VAAPI:-0}" = 1 ]; then
-  encoders="${encoders},h264_vaapi"
+  encoders="${encoders},h264_vaapi,hevc_vaapi"
   extra+=(--enable-vaapi --enable-libdrm)
 fi
 
