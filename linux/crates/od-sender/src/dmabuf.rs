@@ -15,9 +15,6 @@
 //! descriptors keep the memory alive, so a buffer owns no gbm pointer and is
 //! `Send + Sync`.
 
-// Used by capture and the VA-API encoder.
-#![allow(dead_code)]
-
 use std::ffi::{c_char, c_int, c_uint, c_void};
 use std::fs::{File, OpenOptions};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -32,6 +29,7 @@ use crate::backend::{DmabufPlane, PixelFormat};
 const GBM_BO_USE_RENDERING: u32 = 1 << 2;
 const GBM_BO_USE_LINEAR: u32 = 1 << 4;
 /// `GBM_BO_TRANSFER_READ` is 1 << 0, unused.
+#[cfg(test)]
 const GBM_BO_TRANSFER_WRITE: u32 = 1 << 1;
 
 pub const DRM_FORMAT_MOD_LINEAR: u64 = 0;
@@ -60,16 +58,17 @@ const RTLD_NOW: c_int = 2;
 
 /// Declares the libgbm entry points: a table of function pointers resolved
 /// by name from the opened library. The `optional` ones are `Option`s, for
-/// functions older Mesa versions lack.
+/// functions older Mesa versions lack. Attributes (`#[cfg(test)]`) apply to
+/// the entry point's field and its lookup.
 macro_rules! libgbm {
     (
-        $( fn $name:ident($($arg:ty),*) -> $ret:ty; )*
+        $( $(#[$attr:meta])* fn $name:ident($($arg:ty),*) -> $ret:ty; )*
         optional {
             $( fn $oname:ident($($oarg:ty),*) -> $oret:ty; )*
         }
     ) => {
         struct Gbm {
-            $( $name: unsafe extern "C" fn($($arg),*) -> $ret, )*
+            $( $(#[$attr])* $name: unsafe extern "C" fn($($arg),*) -> $ret, )*
             $( $oname: Option<unsafe extern "C" fn($($oarg),*) -> $oret>, )*
         }
 
@@ -78,7 +77,7 @@ macro_rules! libgbm {
             /// `lib` is a handle from `dlopen` of libgbm, which is never closed.
             unsafe fn resolve(lib: *mut c_void) -> Result<Self> {
                 Ok(Self {
-                    $( $name: {
+                    $( $(#[$attr])* $name: {
                         let sym = concat!(stringify!($name), "\0");
                         // SAFETY: `sym` is NUL-terminated; the declared
                         // signature is the one gbm.h documents for the name.
@@ -117,10 +116,9 @@ libgbm! {
     fn gbm_bo_get_stride_for_plane(*mut GbmBo, c_int) -> u32;
     fn gbm_bo_get_offset(*mut GbmBo, c_int) -> u32;
     fn gbm_bo_get_modifier(*mut GbmBo) -> u64;
-    fn gbm_bo_get_width(*mut GbmBo) -> u32;
-    fn gbm_bo_get_height(*mut GbmBo) -> u32;
-    fn gbm_bo_get_format(*mut GbmBo) -> u32;
+    #[cfg(test)]
     fn gbm_bo_map(*mut GbmBo, u32, u32, u32, u32, u32, *mut u32, *mut *mut c_void) -> *mut c_void;
+    #[cfg(test)]
     fn gbm_bo_unmap(*mut GbmBo, *mut c_void) -> ();
     optional {
         fn gbm_bo_create_with_modifiers2(*mut GbmDeviceRaw, u32, u32, u32, *const u64, c_uint, u32) -> *mut GbmBo;
@@ -169,6 +167,7 @@ fn dev_minor(dev: u64) -> u32 {
 }
 
 /// A `dev_t` from its parts, as glibc's `gnu_dev_makedev`.
+#[cfg(test)]
 fn dev_make(major: u32, minor: u32) -> u64 {
     let (major, minor) = (u64::from(major), u64::from(minor));
     ((major & 0xffff_f000) << 32)
@@ -297,7 +296,8 @@ impl GbmDevice {
 
     /// [`alloc`](Self::alloc), with every pixel set to `fill(x, y)` (its four
     /// bytes in memory order) through a CPU mapping; Mesa detiles on the way
-    /// for tiled buffers. For tests and checks of the encoder's import.
+    /// for tiled buffers. For tests of the encoder's import.
+    #[cfg(test)]
     pub(crate) fn alloc_filled(
         &self,
         width: u32,
