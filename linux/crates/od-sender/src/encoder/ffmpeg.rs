@@ -1428,6 +1428,57 @@ mod tests {
     }
 
     #[test]
+    fn vaapi_dmabuf_imports_outlive_the_frames_reading_them() {
+        let (w, h) = (320, 240);
+        let Some((hw, mut gpu)) = gpu(w, h) else {
+            return;
+        };
+        let Some(dev) = gbm_device() else { return };
+        let b = red_over_blue(&dev, w, h, PixelFormat::Xrgb8888, &[DRM_FORMAT_MOD_LINEAR]).unwrap();
+        let convert = |gpu: &mut GpuConvert, frame: &Dmabuf| {
+            let dst = hw_surface(hw.frames).unwrap();
+            gpu.convert_dmabuf(&dst, frame, &mut Steps::new("test"))
+                .unwrap();
+        };
+        // The encoder still holds this frame: its conversion may be queued.
+        let held = into_dmabuf(b, 1);
+        convert(&mut gpu, &held);
+        // Eight more buffers, whose frames are done at once, push it out of
+        // the cache, but its surface stays until the frame goes.
+        let template = Dmabuf {
+            hold: Arc::new(()),
+            ..held.clone()
+        };
+        let other = |id| Dmabuf {
+            id,
+            hold: Arc::new(()),
+            ..template.clone()
+        };
+        for id in 2..=9 {
+            convert(&mut gpu, &other(id));
+        }
+        assert!(!gpu.imports().iter().any(|&(id, _)| id == 1));
+        assert_eq!(gpu.retired(), 1);
+        drop(held);
+        convert(&mut gpu, &other(10));
+        assert_eq!(gpu.retired(), 0);
+        // A frame from shared memory: capture left its GPU buffers, and
+        // their imports go too.
+        let (px, stride) = frame(w, h, 0);
+        let dst = hw_surface(hw.frames).unwrap();
+        gpu.convert(
+            &dst,
+            &px,
+            stride,
+            PixelFormat::Xrgb8888,
+            &mut Steps::new("test"),
+        )
+        .unwrap();
+        assert!(gpu.imports().is_empty());
+        assert_eq!(gpu.retired(), 0);
+    }
+
+    #[test]
     fn vaapi_dmabuf_refusals_keep_the_gpu_conversion() {
         let (w, h) = (320, 240);
         let Some(mut e) = vaapi(w, h) else { return };

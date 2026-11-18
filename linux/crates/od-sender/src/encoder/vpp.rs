@@ -35,7 +35,7 @@ use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, Weak};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use ff::format::Pixel;
@@ -458,7 +458,26 @@ pub struct GpuConvert {
     /// Captured dmabufs imported as VA surfaces, by [`Dmabuf::id`], least
     /// recently used first. A surface aliases the buffer's memory, so it
     /// shows whatever was captured into it last.
-    imports: VecDeque<(u64, VASurfaceID)>,
+    imports: VecDeque<Import>,
+    /// Imports out of the cache that a queued conversion may still read:
+    /// destroyed once their last frame is dropped.
+    retired: Vec<Import>,
+}
+
+/// A captured dmabuf imported as a VA surface.
+struct Import {
+    id: u64,
+    surface: VASurfaceID,
+    /// [`Dmabuf::hold`] of the last frame converted from it. Nothing waits
+    /// for a conversion, but the encoder keeps the frame until its packet
+    /// is out: while this is alive the GPU may still read the surface.
+    last_frame: Weak<dyn Send + Sync>,
+}
+
+impl Import {
+    fn in_use(&self) -> bool {
+        self.last_frame.strong_count() > 0
+    }
 }
 
 // SAFETY: the VA ids and FFmpeg references are only used from the thread that
@@ -543,6 +562,7 @@ impl GpuConvert {
             sources: Vec::new(),
             direct_upload: true,
             imports: VecDeque::new(),
+            retired: Vec::new(),
         })
     }
 
@@ -583,6 +603,9 @@ impl GpuConvert {
                 pixels.len()
             );
         }
+        // Capture is on shared memory now: its GPU buffers go, and so do
+        // their imports, which would keep the memory alive.
+        self.retire(self.imports.len());
         let pix = source_pixel(format);
         let pool = self.source_pool(pix)?;
         let src = hw_surface(pool)?;
@@ -634,10 +657,13 @@ impl GpuConvert {
 
     /// The VA surface of `frame`'s buffer, imported on first sight.
     fn imported(&mut self, frame: &Dmabuf) -> Result<VASurfaceID> {
-        if let Some(i) = self.imports.iter().position(|&(id, _)| id == frame.id) {
-            let entry = self.imports.remove(i).expect("index in range");
+        let last_frame = Arc::downgrade(&frame.hold);
+        if let Some(i) = self.imports.iter().position(|im| im.id == frame.id) {
+            let mut entry = self.imports.remove(i).expect("index in range");
+            let surface = entry.surface;
+            entry.last_frame = last_frame;
             self.imports.push_back(entry);
-            return Ok(entry.1);
+            return Ok(surface);
         }
         let t = std::time::Instant::now();
         let surface = self.import(frame).with_context(|| {
@@ -655,16 +681,30 @@ impl GpuConvert {
             us = t.elapsed().as_micros() as u64,
             "VA-API: imported a capture buffer"
         );
-        if self.imports.len() >= IMPORT_CACHE {
-            if let Some((_, mut old)) = self.imports.pop_front() {
-                // The kernel keeps the memory for any conversion still
-                // reading it; the surface id itself is not used again.
-                // SAFETY: a surface we created and destroy once.
-                unsafe { (self.va.vaDestroySurfaces)(self.display, &mut old, 1) };
-            }
-        }
-        self.imports.push_back((frame.id, surface));
+        self.retire((self.imports.len() + 1).saturating_sub(IMPORT_CACHE));
+        self.imports.push_back(Import {
+            id: frame.id,
+            surface,
+            last_frame,
+        });
         Ok(surface)
+    }
+
+    /// Take the `n` least recently used imports out of the cache, and
+    /// destroy every retired one no conversion can still read.
+    fn retire(&mut self, n: usize) {
+        let n = n.min(self.imports.len());
+        self.retired.extend(self.imports.drain(..n));
+        let (va, display) = (self.va, self.display);
+        self.retired.retain_mut(|im| {
+            if im.in_use() {
+                return true;
+            }
+            // SAFETY: a surface we created; it leaves the list, so it is
+            // destroyed once.
+            unsafe { (va.vaDestroySurfaces)(display, &mut im.surface, 1) };
+            false
+        });
     }
 
     /// `vaCreateSurfaces` on the buffer's dmabufs (`DRM_PRIME_2`). The VA
@@ -762,7 +802,13 @@ impl GpuConvert {
     /// The imported buffers' ids and surfaces, least recently used first.
     #[cfg(test)]
     pub(super) fn imports(&self) -> Vec<(u64, u32)> {
-        self.imports.iter().copied().collect()
+        self.imports.iter().map(|im| (im.id, im.surface)).collect()
+    }
+
+    /// How many imports wait for their last frame before they are destroyed.
+    #[cfg(test)]
+    pub(super) fn retired(&self) -> usize {
+        self.retired.len()
     }
 
     /// Copy `pixels` into the source surface `surface` through a CPU mapping
@@ -948,8 +994,8 @@ impl Drop for GpuConvert {
         // SAFETY: each id and reference was created in `new`, `import` or
         // `source_pool` and is released once.
         unsafe {
-            for (_, mut s) in self.imports.drain(..) {
-                (self.va.vaDestroySurfaces)(self.display, &mut s, 1);
+            for mut im in self.imports.drain(..).chain(self.retired.drain(..)) {
+                (self.va.vaDestroySurfaces)(self.display, &mut im.surface, 1);
             }
             (self.va.vaDestroyContext)(self.display, self.context);
             (self.va.vaDestroyConfig)(self.display, self.config);
