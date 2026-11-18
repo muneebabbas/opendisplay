@@ -294,15 +294,7 @@ const _: () = {
     assert!(offset_of!(VaDrmPrimeSurfaceDescriptor, layers) == 84);
 };
 
-// glibc before 2.34 keeps dlopen in libdl; later versions ship an empty one.
-// SAFETY: these are the signatures `<dlfcn.h>` declares for both functions.
-#[link(name = "dl")]
-unsafe extern "C" {
-    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-}
-
-const RTLD_NOW: c_int = 2;
+use crate::dl::{RTLD_NOW, dlopen, dlsym};
 
 /// Declares the libva entry points: a table of function pointers resolved
 /// by name from the opened library.

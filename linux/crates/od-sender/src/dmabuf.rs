@@ -15,7 +15,7 @@
 //! descriptors keep the memory alive, so a buffer owns no gbm pointer and is
 //! `Send + Sync`.
 
-use std::ffi::{c_char, c_int, c_uint, c_void};
+use std::ffi::{c_int, c_uint, c_void};
 use std::fs::{File, OpenOptions};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -47,14 +47,7 @@ struct GbmBo {
     _private: [u8; 0],
 }
 
-// glibc before 2.34 keeps dlopen in libdl; later versions ship an empty one.
-#[link(name = "dl")]
-unsafe extern "C" {
-    fn dlopen(filename: *const c_char, flags: c_int) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-}
-
-const RTLD_NOW: c_int = 2;
+use crate::dl::{RTLD_NOW, dlopen, dlsym};
 
 /// Declares the libgbm entry points: a table of function pointers resolved
 /// by name from the opened library. The `optional` ones are `Option`s, for
