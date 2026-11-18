@@ -1,0 +1,224 @@
+name: Fork release
+
+# Fork-only (muneebabbas/opendisplay): publishes the Linux sender for a
+# `vX.Y.Z-label.N` tag, where X.Y.Z is the linux/Cargo.toml version. Only the
+# od-sender tarballs are built (no receiver Flatpak, no Mac/Android). Never
+# runs upstream. See FORK.md.
+#
+# The build steps mirror the `build` job of linux-release.yml, kept separate
+# so the fork changes no upstream file. When syncing upstream, compare that
+# job with `sender` below and carry over changes (FFmpeg, symbol floors,
+# packaging).
+on:
+  push:
+    tags:
+      - "v*.*.*-*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing fork tag (vX.Y.Z-label.N)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  validate:
+    if: github.repository != 'peetzweg/opendisplay'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.t.outputs.version }}
+      base: ${{ steps.t.outputs.base }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.TAG }}
+      - name: Validate tag
+        id: t
+        run: |
+          crate="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' linux/Cargo.toml | head -n1)"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[a-z][a-z0-9]*\.[0-9]+$ ]]; then
+            echo "::error::tag $TAG is not vX.Y.Z-label.N"; exit 1
+          fi
+          ver="${TAG#v}"
+          if [ "${ver%%-*}" != "$crate" ]; then
+            echo "::error::tag $TAG base does not match workspace version $crate (linux/Cargo.toml)"; exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "base=${ver%%-*}" >> "$GITHUB_OUTPUT"
+
+  sender:
+    needs: validate
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+            glibc_floor: "2.38"
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            glibc_floor: "2.39"
+    name: od-sender (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: linux
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      # Read by build.rs: `od-sender --version` prints the full fork version.
+      OD_SENDER_VERSION: ${{ needs.validate.outputs.version }}
+      FFMPEG_DIR: /home/runner/static-ffmpeg
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libclang-dev nasm libpipewire-0.3-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Same key as linux-release.yml, so the caches are shared.
+      - name: Cache static FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FFMPEG_DIR }}
+          key: static-ffmpeg-${{ matrix.arch }}-${{ hashFiles('linux/packaging/ffmpeg/build-static.sh') }}
+
+      - name: Build static FFmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: packaging/ffmpeg/build-static.sh "$FFMPEG_DIR"
+
+      - name: Link against static FFmpeg
+        run: echo "RUSTFLAGS=$(cat "$FFMPEG_DIR/rustflags")" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: cargo test --locked --release -p od-sender
+
+      - name: Build
+        run: cargo build --locked --release -p od-sender
+
+      - name: Check dynamic dependencies
+        run: |
+          bin=target/release/od-sender
+          readelf -d "$bin" | grep NEEDED
+          bad="$(readelf -d "$bin" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p' |
+            grep -Ev '^(libc|libm|libpthread|libdl|librt)\.so\.[0-9]+$|^libgcc_s\.so\.1$|^libstdc\+\+\.so\.6$|^libpipewire-0\.3\.so\.0$|^ld-linux-(x86-64|aarch64)\.so\.[0-9]+$' || true)"
+          if [ -n "$bad" ]; then
+            echo "::error::unexpected shared libraries: $bad"
+            exit 1
+          fi
+          packaging/check-symbol-floor.sh "$bin" "${{ matrix.glibc_floor }}" 3.4.32
+
+      - name: Smoke test
+        run: |
+          bin=target/release/od-sender
+          [ "$("$bin" --version)" = "od-sender $VERSION" ] || {
+            echo "::error::--version says '$("$bin" --version)', want od-sender $VERSION"; exit 1; }
+          for enc in x264 openh264 auto; do
+            "$bin" dev encode-bench --encoder "$enc" --width 640 --height 480 --frames 30
+          done
+
+      # Same names and layout as upstream's release, so the Omarchy plugin
+      # installs from either repo.
+      - name: Package
+        run: |
+          name="od-sender-${{ matrix.arch }}-unknown-linux-gnu"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage" "$RUNNER_TEMP/dist"
+          install -m755 target/release/od-sender packaging/tarball/install.sh "$stage/"
+          install -m644 packaging/arch/opendisplay-sender/od-sender.desktop \
+                        packaging/arch/opendisplay-sender/od-sender@.service \
+                        ../LICENSE ../PROTOCOL.md "$stage/"
+          python3 -I packaging/third-party-licenses.py . "$FFMPEG_DIR" > "$stage/THIRD-PARTY-LICENSES.txt"
+          mtime="$(git log -1 --format=%ct)"
+          tar -C "$RUNNER_TEMP" --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime="@${mtime}" -cf - "$name" | gzip -n > "$RUNNER_TEMP/dist/$name.tar.gz"
+          (cd "$RUNNER_TEMP/dist" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          tar -tzvf "$RUNNER_TEMP/dist/$name.tar.gz"
+          cat "$RUNNER_TEMP/dist/$name.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: od-sender-${{ matrix.arch }}
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error
+
+  # Creates the release only once both sender builds succeeded, so a failed
+  # build never leaves a half-empty "latest" release for the plugin to find.
+  release:
+    needs: [validate, sender]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BASE: ${{ needs.validate.outputs.base }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify assets
+        working-directory: dist
+        run: |
+          ls -l
+          want=""
+          for arch in x86_64 aarch64; do
+            want+="od-sender-${arch}-unknown-linux-gnu.tar.gz od-sender-${arch}-unknown-linux-gnu.tar.gz.sha256 "
+          done
+          for f in $want; do
+            [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
+          done
+          sha256sum -c ./*.sha256
+          echo "ASSETS=$want" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        run: |
+          git fetch --no-tags origin "refs/tags/v${BASE}:refs/tags/v${BASE}" 2>/dev/null || true
+          if git rev-parse -q --verify "refs/tags/v${BASE}" >/dev/null; then
+            log="$(git log --oneline "v${BASE}..${TAG}")"
+          else
+            log="(upstream tag v${BASE} not available in this fork)"
+          fi
+          {
+            echo "Fork build of the OpenDisplay Linux sender, based on upstream peetzweg/opendisplay ${BASE}."
+            echo "Only od-sender is built; use upstream's release for the apps and the receiver."
+            echo
+            echo "Fork commits since upstream v${BASE}:"
+            echo
+            echo '```'
+            echo "$log"
+            echo '```'
+          } > notes.md
+          # shellcheck disable=SC2086 # ASSETS is a space-separated list of names
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            (cd dist && gh release upload "$TAG" $ASSETS --clobber)
+          else
+            (cd dist && gh release create "$TAG" $ASSETS --verify-tag --latest \
+              --title "$TAG" --notes-file ../notes.md)
+          fi
+          gh release view "$TAG" --json tagName,isDraft,isPrerelease,assets \
+            --jq '{tagName,isDraft,isPrerelease,assets:[.assets[].name]}'
