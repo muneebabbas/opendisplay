@@ -5,6 +5,10 @@ name: Fork release
 # od-sender tarballs are built (no receiver Flatpak, no Mac/Android). Never
 # runs upstream. See FORK.md.
 #
+# Unlike upstream, the x86_64 build links FFmpeg's VA-API encoders
+# (h264_vaapi, hevc_vaapi), so it needs libva/libdrm at runtime. Pull requests
+# touching the build build and smoke-test without releasing.
+#
 # The build steps mirror the `build` job of linux-release.yml, kept separate
 # so the fork changes no upstream file. When syncing upstream, compare that
 # job with `sender` below and carry over changes (FFmpeg, symbol floors,
@@ -13,6 +17,12 @@ on:
   push:
     tags:
       - "v*.*.*-*.*"
+  pull_request:
+    paths:
+      - ".github/workflows/fork-release.yml"
+      - "linux/packaging/ffmpeg/**"
+      - "linux/packaging/tarball/**"
+      - "linux/Cargo.*"
   workflow_dispatch:
     inputs:
       tag:
@@ -24,11 +34,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: fork-release-${{ inputs.tag || github.ref_name }}
+  group: fork-release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
+# Empty on pull requests: checkout then takes the event's commit.
 env:
-  TAG: ${{ inputs.tag || github.ref_name }}
+  TAG: ${{ inputs.tag || (github.event_name == 'push' && github.ref_name) || '' }}
 
 jobs:
   validate:
@@ -45,6 +56,12 @@ jobs:
         id: t
         run: |
           crate="$(sed -n '/^\[workspace.package\]/,/^\[/{s/^version *= *"\(.*\)"/\1/p}' linux/Cargo.toml | head -n1)"
+          if [ -z "$TAG" ]; then
+            ver="${crate}-dev.$(git rev-parse --short=7 HEAD)"
+            echo "version=$ver" >> "$GITHUB_OUTPUT"
+            echo "base=$crate" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[a-z][a-z0-9]*\.[0-9]+$ ]]; then
             echo "::error::tag $TAG is not vX.Y.Z-label.N"; exit 1
           fi
@@ -64,9 +81,11 @@ jobs:
           - runner: ubuntu-24.04
             arch: x86_64
             glibc_floor: "2.38"
+            vaapi: "1"
           - runner: ubuntu-24.04-arm
             arch: aarch64
             glibc_floor: "2.39"
+            vaapi: "0"
     name: od-sender (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -78,6 +97,8 @@ jobs:
       # Read by build.rs: `od-sender --version` prints the full fork version.
       OD_SENDER_VERSION: ${{ needs.validate.outputs.version }}
       FFMPEG_DIR: /home/runner/static-ffmpeg
+      # build-static.sh: adds h264_vaapi and hevc_vaapi, linking libva/libdrm.
+      FFMPEG_VAAPI: ${{ matrix.vaapi }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -88,16 +109,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libclang-dev nasm libpipewire-0.3-dev
+          if [ "$FFMPEG_VAAPI" = 1 ]; then
+            sudo apt-get install -y --no-install-recommends libva-dev libdrm-dev
+          fi
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Same key as linux-release.yml, so the caches are shared.
+      # Without VA-API the key is linux-release.yml's, so that cache is shared.
       - name: Cache static FFmpeg
         id: ffmpeg-cache
         uses: actions/cache@v4
         with:
           path: ${{ env.FFMPEG_DIR }}
-          key: static-ffmpeg-${{ matrix.arch }}-${{ hashFiles('linux/packaging/ffmpeg/build-static.sh') }}
+          key: static-ffmpeg-${{ matrix.arch }}${{ matrix.vaapi == '1' && '-vaapi' || '' }}-${{ hashFiles('linux/packaging/ffmpeg/build-static.sh') }}
 
       - name: Build static FFmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
@@ -116,8 +140,14 @@ jobs:
         run: |
           bin=target/release/od-sender
           readelf -d "$bin" | grep NEEDED
-          bad="$(readelf -d "$bin" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p' |
-            grep -Ev '^(libc|libm|libpthread|libdl|librt)\.so\.[0-9]+$|^libgcc_s\.so\.1$|^libstdc\+\+\.so\.6$|^libpipewire-0\.3\.so\.0$|^ld-linux-(x86-64|aarch64)\.so\.[0-9]+$' || true)"
+          allowed='^(libc|libm|libpthread|libdl|librt)\.so\.[0-9]+$|^libgcc_s\.so\.1$|^libstdc\+\+\.so\.6$|^libpipewire-0\.3\.so\.0$|^ld-linux-(x86-64|aarch64)\.so\.[0-9]+$'
+          if [ "$FFMPEG_VAAPI" = 1 ]; then
+            # FFmpeg's VA-API encoders link libva and libdrm dynamically.
+            allowed+='|^libva\.so\.2$|^libva-drm\.so\.2$|^libdrm\.so\.2$'
+            readelf -d "$bin" | grep -q 'NEEDED.*\[libva\.so\.2\]' || {
+              echo "::error::VA-API build does not link libva.so.2"; exit 1; }
+          fi
+          bad="$(readelf -d "$bin" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p' | grep -Ev "$allowed" || true)"
           if [ -n "$bad" ]; then
             echo "::error::unexpected shared libraries: $bad"
             exit 1
@@ -132,6 +162,16 @@ jobs:
           for enc in x264 openh264 auto; do
             "$bin" dev encode-bench --encoder "$enc" --width 640 --height 480 --frames 30
           done
+          # No GPU here, so VA-API itself can't open; only prove FFmpeg has
+          # its encoders. doctor exits non-zero without a desktop.
+          if [ "$FFMPEG_VAAPI" = 1 ]; then
+            out="$(timeout 60 "$bin" doctor 2>&1 || true)"
+            echo "$out"
+            grep -q '^encoders:' <<<"$out" || { echo "::error::doctor printed no encoders section"; exit 1; }
+            if grep -q 'this FFmpeg build has no' <<<"$out"; then
+              echo "::error::FFmpeg is missing a VA-API encoder"; exit 1
+            fi
+          fi
 
       # Same names and layout as upstream's release, so the Omarchy plugin
       # installs from either repo.
@@ -162,6 +202,7 @@ jobs:
   # build never leaves a half-empty "latest" release for the plugin to find.
   release:
     needs: [validate, sender]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
