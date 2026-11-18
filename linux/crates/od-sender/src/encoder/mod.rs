@@ -20,8 +20,8 @@
 //!
 //! With VA-API the capture can also hand over GPU buffers (dmabufs) instead
 //! of pixels in shared memory: the GPU imports them as surfaces and converts
-//! and encodes them without the CPU touching a pixel ([`gpu_capture_wanted`],
-//! [`Encoder::takes_dmabuf`]). A GPU frame the encoder cannot take keeps
+//! and encodes them without the CPU touching a pixel
+//! ([`Encoder::takes_dmabuf`]). A GPU frame the encoder cannot take keeps
 //! the capture in shared memory for the rest of the run.
 //!
 //! VA-API also encodes HEVC (`hevc_vaapi`, Main profile, the same low-latency
@@ -40,7 +40,6 @@ mod vpp;
 pub use stage::{ConvertStage, MIN_STAGE_WIDTH, YuvFrame};
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -119,22 +118,6 @@ pub fn can_encode_hevc(width: u32, height: u32) -> bool {
         .unwrap_or_else(|e| e.into_inner())
         .insert((width, height), ok);
     ok
-}
-
-/// Set when a GPU frame could not be encoded: capture stays in shared
-/// memory for the rest of the run, as an HEVC failure keeps a run on H.264.
-static GPU_CAPTURE_FAILED: AtomicBool = AtomicBool::new(false);
-
-/// Whether a stream on `backend` should ask the capture for GPU buffers:
-/// VA-API only, unless a GPU frame already failed in this run. The encoder
-/// still has the last word ([`Encoder::takes_dmabuf`]).
-pub fn gpu_capture_wanted(backend: Backend) -> bool {
-    backend == Backend::Vaapi && !GPU_CAPTURE_FAILED.load(Ordering::Relaxed)
-}
-
-/// A GPU frame failed to encode: no more GPU capture in this run.
-pub fn gpu_capture_failed() {
-    GPU_CAPTURE_FAILED.store(true, Ordering::Relaxed);
 }
 
 #[derive(Debug, Clone, Copy)]
