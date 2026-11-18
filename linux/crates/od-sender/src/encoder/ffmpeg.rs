@@ -1161,9 +1161,10 @@ mod tests {
         } else {
             &[&[]]
         };
-        for (format, mods) in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888]
+        for (id, (format, mods)) in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888]
             .into_iter()
             .flat_map(|f| layouts.iter().map(move |m| (f, *m)))
+            .enumerate()
         {
             let mut dec = ff::codec::context::Context::new_with_codec(codec)
                 .decoder()
@@ -1179,7 +1180,9 @@ mod tests {
                         row[at..at + 4].try_into().unwrap()
                     })
                     .unwrap();
-                into_dmabuf(b, 1)
+                // Its own id: the encoder caches imports by id, and a reused
+                // one would encode the first case's surface again.
+                into_dmabuf(b, id as u64 + 1)
             });
             let layout = buf
                 .as_ref()
