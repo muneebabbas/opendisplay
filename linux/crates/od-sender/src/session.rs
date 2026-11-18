@@ -21,11 +21,11 @@ use tracing::{debug, info, warn};
 use crate::backend::lock::{self, LockHeld};
 use crate::backend::{
     Backend, CaptureEvent, CaptureOptions, CursorEvent, DisplayInfo, DisplaySpec, Frame, FrameSink,
-    InputSink, Position, VirtualDisplay,
+    GpuFrames, InputSink, Position, VirtualDisplay,
 };
 use crate::config::{self, Config, Layer};
 use crate::desktop::{self, Debounce, DesktopOptions, DesktopPlan, PlanError, StreamPlan};
-use crate::encoder::{self, ConvertStage, Encoded, Encoder, EncoderSettings};
+use crate::encoder::{self, ConvertStage, Encoded, Encoder, EncoderSettings, GpuFrameRefused};
 use crate::latest;
 use crate::wayland::cursor::base64;
 use opendisplay_proto::video::Codec;
@@ -146,6 +146,9 @@ fn fnv1a(bytes: &[u8]) -> u32 {
 pub struct Target {
     pub spec: DisplaySpec,
     pub plan: DesktopPlan,
+    /// Capture into GPU buffers when the encoder takes them: no GPU frame
+    /// has failed to encode in this run.
+    pub gpu_capture: bool,
 }
 
 /// Plan the stream, HEVC when it is a candidate: the encoder is VA-API (the
@@ -171,14 +174,14 @@ fn choose_plan(
     desktop::plan(hello, desktop, Codec::H264)
 }
 
-/// `hevc_failed` is set once HEVC has failed in this run (the sender stays
-/// on H.264 for every reconnect after that).
-pub fn target(hello: &Hello, opts: &RunOptions, hevc_failed: bool) -> Result<Target, PlanError> {
+/// The fallbacks in `run` hold for every reconnect after they happen: H.264
+/// once HEVC has failed, shared-memory capture once a GPU frame has.
+fn target(hello: &Hello, opts: &RunOptions, run: &RunState) -> Result<Target, PlanError> {
     let plan = choose_plan(
         hello,
         &opts.desktop,
         opts.encoder,
-        hevc_failed,
+        run.hevc_failed,
         encoder::can_encode_hevc,
     )?;
     Ok(Target {
@@ -191,6 +194,7 @@ pub fn target(hello: &Hello, opts: &RunOptions, hevc_failed: bool) -> Result<Tar
             position: opts.position,
         },
         plan,
+        gpu_capture: !run.gpu_capture_failed,
     })
 }
 
@@ -216,6 +220,9 @@ struct RunState {
     losses: LossBudget,
     /// HEVC failed at some point: H.264 from then on, reconnects too.
     hevc_failed: bool,
+    /// A GPU frame failed to encode: shared-memory capture from then on,
+    /// reconnects too.
+    gpu_capture_failed: bool,
 }
 
 /// How often a display that vanished under the session (output removed,
@@ -291,13 +298,20 @@ struct EncodePipeline {
     /// An HEVC encoder that cannot open or keeps failing: sent once, after
     /// which the thread stops encoding (the session falls back to H.264).
     codec_failed_rx: mpsc::UnboundedReceiver<String>,
+    /// Capture into GPU buffers while the encoder takes them (VA-API).
+    gpu_frames: Option<GpuFrames>,
+    /// A GPU frame failed to encode: sent once, after which capture stays
+    /// in shared memory.
+    gpu_failed_rx: mpsc::UnboundedReceiver<String>,
 }
 
 /// Consecutive failed `encode` calls after which an HEVC stream is given up.
 const HEVC_MAX_CONSECUTIVE_FAILURES: u32 = 30;
 
 impl EncodePipeline {
-    fn start(mut settings: EncoderSettings) -> Result<Self> {
+    /// `gpu_capture`: ask the capture for GPU buffers, which only the
+    /// VA-API encoder takes.
+    fn start(mut settings: EncoderSettings, gpu_capture: bool) -> Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let force_idr = Arc::new(AtomicBool::new(true));
         let (raw_tx, raw_rx) = latest::channel::<Frame>();
@@ -308,6 +322,10 @@ impl EncodePipeline {
         let enc_force = force_idr.clone();
         let stage = ConvertStage::new();
         let enc_stage = stage.clone();
+        let (gpu_failed_tx, gpu_failed_rx) = mpsc::unbounded_channel::<String>();
+        let gpu_frames =
+            (gpu_capture && settings.backend == encoder::Backend::Vaapi).then(GpuFrames::new);
+        let enc_gpu = gpu_frames.clone();
         spawn_reporting_panics("encode", lost_tx.clone(), move || {
             let mut encoder: Option<Encoder> = None;
             let hevc = settings.codec == Codec::Hevc;
@@ -371,6 +389,14 @@ impl EncodePipeline {
                             debug_assert_eq!(e.codec(), settings.codec);
                             settings.backend = e.backend();
                             enc_stage.bind(&e);
+                            if let Some(g) = enc_gpu.as_ref().filter(|g| g.wanted()) {
+                                if !e.takes_dmabuf() {
+                                    info!(
+                                        "capture: shared memory (the encoder cannot take GPU buffers)"
+                                    );
+                                    g.decline();
+                                }
+                            }
                             encoder = Some(e);
                             // A new encoder starts with a clean record, like
                             // the Mac's setupEncoder.
@@ -389,7 +415,30 @@ impl EncodePipeline {
                     }
                 }
                 let force = enc_force.swap(false, Ordering::Relaxed);
-                match encoder.as_mut().unwrap().encode(&frame, force) {
+                let result = encoder.as_mut().unwrap().encode(&frame, force);
+                // A GPU frame the encoder could not take (not one it failed
+                // to encode, which counts as any failure below) is not
+                // retried: capture switches to shared memory for the rest of
+                // the run (also when the encoder could never take GPU frames,
+                // as decided above) and the next frame is an IDR from there.
+                if let (Err(e), Some(g)) = (&result, &enc_gpu) {
+                    if e.is::<GpuFrameRefused>() {
+                        if g.wanted() {
+                            warn!(
+                                "encoding a GPU frame failed, capturing into shared memory from now on: {e:#}"
+                            );
+                            let _ = gpu_failed_tx.send(format!("{e:#}"));
+                        } else {
+                            debug!(
+                                "GPU frame dropped while capture switches to shared memory: {e:#}"
+                            );
+                        }
+                        g.decline();
+                        enc_force.store(true, Ordering::Relaxed);
+                        continue;
+                    }
+                }
+                match result {
                     Ok(units) => {
                         failures = 0;
                         if force && !units.iter().any(|u| u.unit.is_idr) {
@@ -431,7 +480,14 @@ impl EncodePipeline {
             lost_tx,
             lost_rx,
             codec_failed_rx,
+            gpu_frames,
+            gpu_failed_rx,
         })
+    }
+
+    /// For the capture: GPU frames while the encoder takes them.
+    fn gpu_frames(&self) -> Option<GpuFrames> {
+        self.gpu_frames.clone()
     }
 
     /// The capture side: a frame replaces one the busy encoder has not
@@ -560,13 +616,16 @@ fn build(
         }
         None => backend.open(&target.spec)?,
     };
-    let mut pipe = EncodePipeline::start(EncoderSettings {
-        backend: opts.encoder,
-        codec: target.plan.stream.codec,
-        bitrate_bps: (opts.bitrate_mbps * 1e6) as u32,
-        max_fps: target.plan.stream.fps as f32,
-        threads: opts.threads,
-    })?;
+    let mut pipe = EncodePipeline::start(
+        EncoderSettings {
+            backend: opts.encoder,
+            codec: target.plan.stream.codec,
+            bitrate_bps: (opts.bitrate_mbps * 1e6) as u32,
+            max_fps: target.plan.stream.fps as f32,
+            threads: opts.threads,
+        },
+        target.gpu_capture && backend.caps().dmabuf,
+    )?;
     // Painted until the side channel has delivered its first sprite.
     let painted = opts.cursor != CursorMode::Off;
     let mut side = CursorSide::Off;
@@ -581,7 +640,13 @@ fn build(
             }
         }
     }
-    display.start_capture(CaptureOptions { cursor: painted }, pipe.sink())?;
+    display.start_capture(
+        CaptureOptions {
+            cursor: painted,
+            gpu: pipe.gpu_frames(),
+        },
+        pipe.sink(),
+    )?;
     let input = match display.input() {
         Ok(i) => Some(i),
         Err(e) => {
@@ -846,6 +911,9 @@ enum DisplayEvent {
     Lost(String),
     /// The HEVC encoder failed (could not open, or kept failing).
     CodecFailed(String),
+    /// A GPU frame failed to encode; capture already switched to shared
+    /// memory.
+    GpuCaptureFailed(String),
 }
 
 async fn next_display_event(active: &mut Option<Active>) -> DisplayEvent {
@@ -856,6 +924,7 @@ async fn next_display_event(active: &mut Option<Active>) -> DisplayEvent {
         Some(e) = a.pipe.encoded_rx.recv() => DisplayEvent::Encoded(e),
         Some(why) = a.pipe.lost_rx.recv() => DisplayEvent::Lost(why),
         Some(why) = a.pipe.codec_failed_rx.recv() => DisplayEvent::CodecFailed(why),
+        Some(why) = a.pipe.gpu_failed_rx.recv() => DisplayEvent::GpuCaptureFailed(why),
         // Encoder gone and capture silent: nothing more will come.
         else => std::future::pending().await,
     }
@@ -1050,12 +1119,19 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
                         }
                         vec![]
                     }
+                    DisplayEvent::GpuCaptureFailed(why) => {
+                        // The encoder thread has said so and switched the
+                        // capture; this keeps reconnects off GPU buffers.
+                        debug!("GPU capture off for the rest of this run ({why})");
+                        state.gpu_capture_failed = true;
+                        vec![]
+                    }
                     DisplayEvent::CodecFailed(why) => {
                         state.hevc_failed = true;
                         warn!("HEVC encoder failed ({why}); switching to H.264 for the rest of this run");
                         // The newest hello decides; this is no display loss.
                         let Some(h) = sess.hello().cloned() else { continue };
-                        let t = match target(&h, &ropts, true) {
+                        let t = match target(&h, &ropts, state) {
                             Ok(t) => t,
                             Err(e) => {
                                 warn!("cannot plan an H.264 stream for this receiver: {e}; closing the connection");
@@ -1204,7 +1280,7 @@ async fn session<S: AsyncRead + AsyncWrite + Unpin>(
                             Some(opts.receiver_name.as_str()),
                             h.device.as_deref(),
                         ]);
-                        let t = match target(&h, &ropts, state.hevc_failed) {
+                        let t = match target(&h, &ropts, state) {
                             Ok(t) => t,
                             Err(e) => {
                                 warn!("cannot plan a desktop for this receiver: {e}; closing the connection");
@@ -1441,7 +1517,7 @@ mod tests {
 
     #[test]
     fn target_names_the_output_after_the_receiver() {
-        let t = target(&hello(), &opts(), false).unwrap();
+        let t = target(&hello(), &opts(), &RunState::default()).unwrap();
         assert_eq!(t.spec.name, "od-3f9a1c");
         assert_eq!(
             (t.spec.width, t.spec.height, t.spec.hz),
@@ -1453,7 +1529,7 @@ mod tests {
                 ..hello()
             },
             &opts(),
-            false,
+            &RunState::default(),
         )
         .unwrap();
         assert_eq!(anon.spec.name, "od-anon");
@@ -1461,7 +1537,7 @@ mod tests {
 
     #[test]
     fn adopted_outputs_stream_at_their_own_size() {
-        let t = target(&hello(), &opts(), false).unwrap();
+        let t = target(&hello(), &opts(), &RunState::default()).unwrap();
         let mut info = info_of(&t.spec);
         assert_eq!(stream_for(&info, &t), t.plan.stream);
         (info.width, info.height) = (1921, 1080);
@@ -1881,7 +1957,7 @@ mod tests {
         assert_eq!(r.position, Position::AutoLeft);
         assert_eq!(r.desktop.scale, crate::desktop::ScalePolicy::Fixed(2.0));
         assert_eq!(r.bitrate_mbps, 8.0, "the command line wins");
-        let t = target(&hello, &r, false).unwrap();
+        let t = target(&hello, &r, &RunState::default()).unwrap();
         assert_eq!((t.spec.scale, t.spec.position), (2.0, Position::AutoLeft));
         // Another receiver gets the options as they were.
         let other = base.for_receiver(&[Some("someone-else"), None, None]);

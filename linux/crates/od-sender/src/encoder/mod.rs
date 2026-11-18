@@ -18,6 +18,12 @@
 //! the GPU's power-saving clocks it can still add latency compared with
 //! x264, so it does not join `auto` yet.
 //!
+//! With VA-API the capture can also hand over GPU buffers (dmabufs) instead
+//! of pixels in shared memory: the GPU imports them as surfaces and converts
+//! and encodes them without the CPU touching a pixel
+//! ([`Encoder::takes_dmabuf`]). A GPU frame the encoder cannot take keeps
+//! the capture in shared memory for the rest of the run.
+//!
 //! VA-API also encodes HEVC (`hevc_vaapi`, Main profile, the same low-latency
 //! settings), the only backend that does. The session picks the codec when
 //! the receiver offers HEVC ([`can_encode_hevc`] says whether the GPU opens
@@ -112,6 +118,19 @@ pub fn can_encode_hevc(width: u32, height: u32) -> bool {
         .unwrap_or_else(|e| e.into_inner())
         .insert((width, height), ok);
     ok
+}
+
+/// Context of an [`Encoder::encode`] error for a GPU frame the encoder could
+/// not take (no GPU conversion, or the import or conversion failed), as
+/// against one it failed to encode: the capture can switch to shared memory
+/// and the same encoder goes on. Test with `error.is::<GpuFrameRefused>()`.
+#[derive(Debug)]
+pub struct GpuFrameRefused;
+
+impl std::fmt::Display for GpuFrameRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the encoder cannot take this GPU frame")
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -257,6 +276,12 @@ impl Encoder {
         }
     }
 
+    /// Whether [`Self::encode`] takes [`FrameBuf::Dmabuf`] frames: VA-API
+    /// with the colour conversion on the GPU.
+    pub fn takes_dmabuf(&self) -> bool {
+        matches!(&self.imp, Imp::Ffmpeg(e) if e.gpu_convert())
+    }
+
     /// Frames at least this wide are converted by the [`ConvertStage`]
     /// ahead of the encoder.
     pub fn stage_min_width(&self) -> u32 {
@@ -268,10 +293,10 @@ impl Encoder {
 
     /// Encode one frame: 4-byte RGB pixels in the capture's byte order
     /// ([`crate::backend::PixelFormat`]), or already converted by a
-    /// [`ConvertStage`]; a dmabuf frame is an error until capture can hand
-    /// GPU buffers to the VA-API backend. Returns the pictures the encoder
-    /// produced, in order: usually one, none when it skipped the frame or
-    /// holds it, two when a lagging encoder catches up.
+    /// [`ConvertStage`], or a GPU buffer if [`Self::takes_dmabuf`]. Returns
+    /// the pictures the encoder produced, in order: usually one, none when
+    /// it skipped the frame or holds it, two when a lagging encoder catches
+    /// up.
     pub fn encode(&mut self, frame: &Frame, force_idr: bool) -> Result<Vec<Encoded>> {
         match (&frame.buf, &mut self.imp) {
             (
@@ -294,7 +319,12 @@ impl Encoder {
             ) => e.encode(pixels, *stride, *format, force_idr, frame.captured_at),
             (FrameBuf::Yuv(y), Imp::Ffmpeg(e)) => e.encode_yuv(y, force_idr, frame.captured_at),
             (FrameBuf::Yuv(_), _) => bail!("{} takes RGB frames only", self.label()),
-            (FrameBuf::Dmabuf { .. }, _) => bail!("{} cannot encode dmabuf frames", self.label()),
+            (FrameBuf::Dmabuf(d), Imp::Ffmpeg(e)) if e.gpu_convert() => {
+                e.encode_dmabuf(d, force_idr, frame.captured_at)
+            }
+            (FrameBuf::Dmabuf(_), _) => {
+                Err(anyhow!("{} cannot encode GPU frames", self.label()).context(GpuFrameRefused))
+            }
         }
     }
 }
@@ -324,5 +354,32 @@ mod tests {
                 "{backend:?}: {e:#}"
             );
         }
+    }
+
+    #[test]
+    fn a_gpu_frame_is_refused_not_failed_without_the_gpu_conversion() {
+        let s = EncoderSettings {
+            backend: Backend::Openh264,
+            codec: Codec::H264,
+            bitrate_bps: 2_000_000,
+            max_fps: 60.0,
+            threads: 1,
+        };
+        let mut e = Encoder::new(320, 240, s).unwrap();
+        let frame = Frame {
+            captured_at: Instant::now(),
+            presentation_ns: None,
+            buf: FrameBuf::Dmabuf(crate::backend::Dmabuf {
+                width: 320,
+                height: 240,
+                format: crate::backend::PixelFormat::Xrgb8888,
+                modifier: 0,
+                planes: Vec::new(),
+                id: 1,
+                hold: std::sync::Arc::new(()),
+            }),
+        };
+        let err = e.encode(&frame, true).err().expect("a GPU frame");
+        assert!(err.is::<GpuFrameRefused>(), "{err:#}");
     }
 }

@@ -7,14 +7,16 @@
 //! back the same way ([`Converter`], in parallel bands).
 //!
 //! VA-API takes GPU surfaces, not system memory. Where the driver has a
-//! video-processing pipeline the capture pixels are copied into a surface
-//! and converted to NV12 by the GPU straight into a surface of the encoder's
-//! own pool ([`HwFrames`], [`GpuConvert`]): the one copy a dmabuf capture
-//! path would remove later. Otherwise swscale converts as above and the NV12
-//! frame is uploaded into such a surface before it is sent.
+//! video-processing pipeline the GPU converts to NV12 straight into a
+//! surface of the encoder's own pool ([`HwFrames`], [`GpuConvert`]). A
+//! capture in GPU buffers (dmabufs) is imported as VA surfaces and read by
+//! the GPU directly, with no CPU copy at all ([`FfmpegEncoder::encode_dmabuf`]);
+//! capture pixels in system memory are first copied into a surface.
+//! Otherwise swscale converts as above and the NV12 frame is uploaded into
+//! such a surface before it is sent.
 
 use std::collections::VecDeque;
-use std::sync::Once;
+use std::sync::{Arc, Once};
 use std::time::Instant;
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -28,8 +30,8 @@ use super::convert::{Converter, band_count};
 use super::stage::{YuvFrame, new_video, tag_bt709};
 use super::steps::Steps;
 use super::vpp::{GpuConvert, hw_surface, new_pool};
-use super::{Encoded, EncoderSettings};
-use crate::backend::PixelFormat;
+use super::{Encoded, EncoderSettings, GpuFrameRefused};
+use crate::backend::{Dmabuf, PixelFormat};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -114,9 +116,19 @@ struct InFlight {
     captured_at: Instant,
     /// When the encode call for it started.
     started: Instant,
-    /// The GPU conversion's source surface, held until the packet is out so
-    /// the pool cannot reuse it while the GPU may still read it.
-    _source: Option<ff::frame::Video>,
+    /// What the GPU conversion reads, held until the packet is out so it is
+    /// not reused while the GPU may still read it.
+    _source: Option<Hold>,
+}
+
+/// The source of a GPU conversion, kept alive by [`InFlight`]. Only held for
+/// its drop, never read.
+#[allow(dead_code)]
+enum Hold {
+    /// An upload surface: the pool must not hand it out again yet.
+    Surface(ff::frame::Video),
+    /// A captured dmabuf: the capture must not render into it again yet.
+    Capture(Arc<dyn Send + Sync>),
 }
 
 pub struct FfmpegEncoder {
@@ -324,7 +336,13 @@ impl FfmpegEncoder {
                 &mut self.steps,
             ) {
                 Ok((mut surface, source)) => {
-                    return self.send(&mut surface, Some(source), force_idr, captured_at, t0);
+                    return self.send(
+                        &mut surface,
+                        Some(Hold::Surface(source)),
+                        force_idr,
+                        captured_at,
+                        t0,
+                    );
                 }
                 Err(e) => {
                     // A driver that failed once will fail again: keep
@@ -343,6 +361,39 @@ impl FfmpegEncoder {
         let out = self.submit(&mut yuv, force_idr, captured_at, t0);
         self.yuv = yuv;
         out
+    }
+
+    /// Encode a captured GPU buffer: imported as a VA surface and converted
+    /// on the GPU, no CPU copy. Only when [`Self::gpu_convert`]. The buffer
+    /// is held ([`Dmabuf::hold`]) until its packet is out. A failure here
+    /// (a buffer the driver will not import) leaves the GPU conversion in
+    /// use for system-memory frames; the capture falls back to those.
+    pub fn encode_dmabuf(
+        &mut self,
+        frame: &Dmabuf,
+        force_idr: bool,
+        captured_at: Instant,
+    ) -> Result<Vec<Encoded>> {
+        let t0 = Instant::now();
+        self.steps.start();
+        let mut surface = self.convert_dmabuf(frame).context(GpuFrameRefused)?;
+        tag_bt709(&mut surface);
+        let hold = Hold::Capture(frame.hold.clone());
+        self.send(&mut surface, Some(hold), force_idr, captured_at, t0)
+    }
+
+    /// `frame` converted into a surface of the encoder's pool.
+    fn convert_dmabuf(&mut self, frame: &Dmabuf) -> Result<ff::frame::Video> {
+        let (Some(gpu), false) = (&mut self.gpu, self.gpu_failed) else {
+            bail!("GPU frames need the GPU colour conversion");
+        };
+        let hw = self
+            .hw
+            .as_ref()
+            .ok_or_else(|| anyhow!("no VA-API surfaces"))?;
+        let surface = hw_surface(hw.frames)?;
+        gpu.convert_dmabuf(&surface, frame, &mut self.steps)?;
+        Ok(surface)
     }
 
     /// Encode a frame the convert stage already converted. The encoder takes
@@ -398,7 +449,7 @@ impl FfmpegEncoder {
     }
 
     /// Record the frame just sent under the current pts and move to the next.
-    fn queue(&mut self, captured_at: Instant, started: Instant, source: Option<ff::frame::Video>) {
+    fn queue(&mut self, captured_at: Instant, started: Instant, source: Option<Hold>) {
         self.in_flight.push_back(InFlight {
             pts: self.pts,
             captured_at,
@@ -431,7 +482,7 @@ impl FfmpegEncoder {
     fn send(
         &mut self,
         frame: &mut ff::frame::Video,
-        source: Option<ff::frame::Video>,
+        source: Option<Hold>,
         force_idr: bool,
         captured_at: Instant,
         t0: Instant,
@@ -560,6 +611,10 @@ fn pick_format(codec: &ff::Codec, kind: Kind) -> Pixel {
 mod tests {
     use super::*;
     use crate::backend::{Frame, FrameBuf, Pixels};
+    use crate::dmabuf::{
+        DRM_FORMAT_MOD_LINEAR, GbmBuffer, GbmDevice, I915_4_TILED, I915_4_TILED_LNL_CCS,
+        modifier_name,
+    };
     use crate::encoder::vpp::{download, sample};
     use crate::encoder::{Backend, Encoder};
     use opendisplay_proto::video::nal_units;
@@ -571,6 +626,70 @@ mod tests {
         max_fps: 60.0,
         threads: 1,
     };
+
+    /// A gbm device on the first render node, or why the test skips.
+    fn gbm_device() -> Option<GbmDevice> {
+        match GbmDevice::open(std::path::Path::new("/dev/dri/renderD128")) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                eprintln!("skipped: no gbm device here ({e:#})");
+                None
+            }
+        }
+    }
+
+    /// A gbm buffer as the capture would hand it over.
+    fn into_dmabuf(b: GbmBuffer, id: u64) -> Dmabuf {
+        Dmabuf {
+            width: b.width,
+            height: b.height,
+            format: b.format,
+            modifier: b.modifier,
+            planes: b.planes,
+            id,
+            hold: Arc::new(()),
+        }
+    }
+
+    /// A `w`x`h` buffer, red in the top half and blue in the bottom one.
+    fn red_over_blue(
+        dev: &GbmDevice,
+        w: u32,
+        h: u32,
+        format: PixelFormat,
+        mods: &[u64],
+    ) -> Result<GbmBuffer> {
+        let (red, blue) = match format {
+            PixelFormat::Xrgb8888 | PixelFormat::Argb8888 => ([0, 0, 255, 0], [255, 0, 0, 0]),
+            PixelFormat::Xbgr8888 | PixelFormat::Abgr8888 => ([255, 0, 0, 0], [0, 0, 255, 0]),
+        };
+        dev.alloc_filled(
+            w,
+            h,
+            format,
+            mods,
+            |_, y| if y < h / 2 { red } else { blue },
+        )
+    }
+
+    /// Red at a quarter of `dst`'s height and blue at three quarters, BT.709
+    /// limited range within 2 levels.
+    fn assert_red_over_blue(dst: &ff::frame::Video, what: &str) {
+        let nv12 = download(dst).unwrap();
+        let (w, h) = (dst.width() as usize, dst.height() as usize);
+        for (at, want, name) in [
+            (h / 4, [63, 102, 240], "red"),
+            (h * 3 / 4, [32, 240, 118], "blue"),
+        ] {
+            for x in [0, w / 2, w - 1] {
+                let got = sample(&nv12, x, at);
+                assert!(
+                    got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= 2),
+                    "{what}: {name} at {x},{at} came out as {got:?}, expected {want:?}"
+                );
+            }
+        }
+    }
 
     /// The VA-API H.264 encoder; see [`vaapi_codec`].
     fn vaapi(w: u32, h: u32) -> Option<FfmpegEncoder> {
@@ -953,36 +1072,40 @@ mod tests {
             let _src = gpu
                 .convert(&dst, &px, stride, format, &mut Steps::new("test"))
                 .unwrap();
-            let got = download(&dst).unwrap();
-            // swscale is the reference the receiver's colours are defined by.
-            let mut want = new_video(Pixel::NV12, w as u32, h as u32);
-            Converter::new(w as u32, h as u32, Pixel::NV12, 1)
-                .unwrap()
-                .convert(&px, stride, format, &mut want)
-                .unwrap();
-            for (i, rgb) in PATCHES.iter().enumerate() {
-                let at = (i * BLOCK + BLOCK / 2, BLOCK / 2);
-                let (g, wnt) = (sample(&got, at.0, at.1), sample(&want, at.0, at.1));
-                assert!(
-                    g.iter().zip(wnt).all(|(g, w)| g.abs_diff(w) <= 1),
-                    "{format:?} {rgb:?} (mapped upload {direct}): GPU {g:?}, swscale {wnt:?}"
-                );
-            }
-            // Known values for red and white, so the reference itself is checked.
-            let red = sample(&got, BLOCK / 2, BLOCK / 2);
-            assert!(
-                red.iter()
-                    .zip([63, 102, 240])
-                    .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 1)
-            );
-            let white = sample(&got, 3 * BLOCK + BLOCK / 2, BLOCK / 2);
-            assert!(
-                white
-                    .iter()
-                    .zip([235, 128, 128])
-                    .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 1)
+            assert_patches(
+                &dst,
+                format,
+                &format!("{format:?} (mapped upload {direct})"),
             );
         }
+    }
+
+    /// `dst` holds [`patches`] in `format` converted to BT.709 limited range:
+    /// every patch within 1 level of swscale, the reference the receiver's
+    /// colours are defined by, and red and white at their known values, so
+    /// the reference itself is checked.
+    fn assert_patches(dst: &ff::frame::Video, format: PixelFormat, what: &str) {
+        let (w, h) = (PATCHES.len() * BLOCK, BLOCK);
+        let got = download(dst).unwrap();
+        let (px, stride) = patches(format);
+        let mut want = new_video(Pixel::NV12, w as u32, h as u32);
+        Converter::new(w as u32, h as u32, Pixel::NV12, 1)
+            .unwrap()
+            .convert(&px, stride, format, &mut want)
+            .unwrap();
+        let near = |g: [u8; 3], w: [u8; 3]| g.iter().zip(w).all(|(g, w)| g.abs_diff(w) <= 1);
+        for (i, rgb) in PATCHES.iter().enumerate() {
+            let at = (i * BLOCK + BLOCK / 2, BLOCK / 2);
+            let (g, wnt) = (sample(&got, at.0, at.1), sample(&want, at.0, at.1));
+            assert!(near(g, wnt), "{what} {rgb:?}: GPU {g:?}, swscale {wnt:?}");
+        }
+        let red = sample(&got, BLOCK / 2, BLOCK / 2);
+        assert!(near(red, [63, 102, 240]), "{what}: red came out as {red:?}");
+        let white = sample(&got, 3 * BLOCK + BLOCK / 2, BLOCK / 2);
+        assert!(
+            near(white, [235, 128, 128]),
+            "{what}: white came out as {white:?}"
+        );
     }
 
     #[test]
@@ -995,7 +1118,23 @@ mod tests {
         gpu_encodes_the_right_colours(Codec::Hevc);
     }
 
+    #[test]
+    fn vaapi_dmabuf_encodes_the_right_colours() {
+        gpu_encodes_the_right_colours_from(Codec::H264, true);
+    }
+
+    #[test]
+    fn vaapi_hevc_dmabuf_encodes_the_right_colours() {
+        gpu_encodes_the_right_colours_from(Codec::Hevc, true);
+    }
+
     fn gpu_encodes_the_right_colours(wire: Codec) {
+        gpu_encodes_the_right_colours_from(wire, false);
+    }
+
+    /// `PATCHES` encoded and decoded again, from system memory or, `dmabuf`,
+    /// from GPU buffers in every layout gbm gives us.
+    fn gpu_encodes_the_right_colours_from(wire: Codec, dmabuf: bool) {
         // Every row of patches repeated: the HEVC encoder refuses a picture
         // as short as one block (Intel iHD fails to open it at 64 rows).
         let rows = 3;
@@ -1008,19 +1147,53 @@ mod tests {
             return;
         }
         let Some(codec) = decoder(wire) else { return };
-        for format in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888] {
+        let dev = if dmabuf {
+            let Some(dev) = gbm_device() else { return };
+            Some(dev)
+        } else {
+            None
+        };
+        let layouts: &[&[u64]] = if dmabuf {
+            &[
+                &[DRM_FORMAT_MOD_LINEAR],
+                &[I915_4_TILED, DRM_FORMAT_MOD_LINEAR],
+            ]
+        } else {
+            &[&[]]
+        };
+        for (id, (format, mods)) in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888]
+            .into_iter()
+            .flat_map(|f| layouts.iter().map(move |m| (f, *m)))
+            .enumerate()
+        {
             let mut dec = ff::codec::context::Context::new_with_codec(codec)
                 .decoder()
                 .video()
                 .unwrap();
             let (row, stride) = patches(format);
             let px = row.repeat(rows);
+            let buf = dev.as_ref().map(|dev| {
+                let row = &row;
+                let b = dev
+                    .alloc_filled(w, h, format, mods, |x, _| {
+                        let at = x as usize * 4;
+                        row[at..at + 4].try_into().unwrap()
+                    })
+                    .unwrap();
+                // Its own id: the encoder caches imports by id, and a reused
+                // one would encode the first case's surface again.
+                into_dmabuf(b, id as u64 + 1)
+            });
+            let layout = buf
+                .as_ref()
+                .map_or("system memory".into(), |b| modifier_name(b.modifier));
             let mut last = None;
             for i in 0..3 {
-                for u in e
-                    .encode(&px, stride, format, i == 0, Instant::now())
-                    .unwrap()
-                {
+                let units = match &buf {
+                    Some(b) => e.encode_dmabuf(b, i == 0, Instant::now()),
+                    None => e.encode(&px, stride, format, i == 0, Instant::now()),
+                };
+                for u in units.unwrap() {
                     dec.send_packet(&ff::Packet::copy(&u.unit.annexb)).unwrap();
                     let mut out = ff::frame::Video::empty();
                     while dec.receive_frame(&mut out).is_ok() {
@@ -1051,7 +1224,7 @@ mod tests {
                     got.iter()
                         .zip(want)
                         .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 4),
-                    "{format:?} patch {i}: decoded {got:?}, expected {want:?}"
+                    "{format:?} {layout} patch {i}: decoded {got:?}, expected {want:?}"
                 );
             }
         }
@@ -1138,5 +1311,216 @@ mod tests {
                 assert_eq!(units[0].unit.is_idr, i == 0, "{w}x{h} frame {i}");
             }
         }
+    }
+
+    #[test]
+    fn vaapi_dmabuf_convert_is_bt709_limited() {
+        let (w, h) = ((PATCHES.len() * BLOCK) as u32, BLOCK as u32);
+        let Some((hw, mut gpu)) = gpu(w, h) else {
+            return;
+        };
+        let Some(dev) = gbm_device() else { return };
+        let mut id = 0;
+        for format in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888] {
+            for modifier in [DRM_FORMAT_MOD_LINEAR, I915_4_TILED] {
+                let (row, _) = patches(format);
+                let fill = |x: u32, _| {
+                    let at = x as usize * 4;
+                    row[at..at + 4].try_into().unwrap()
+                };
+                let what = format!("{format:?} {}", modifier_name(modifier));
+                let b = match dev.alloc_filled(w, h, format, &[modifier], fill) {
+                    Ok(b) if b.modifier == modifier => b,
+                    // LINEAR is the one layout capture uses outside Intel,
+                    // so a GPU that converts must allocate it.
+                    _ if modifier == DRM_FORMAT_MOD_LINEAR => panic!("{what}: not allocated"),
+                    Ok(b) => {
+                        let got = modifier_name(b.modifier);
+                        eprintln!("skipped {what}: gbm allocated {got}");
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("skipped {what}: not allocated here ({e:#})");
+                        continue;
+                    }
+                };
+                id += 1;
+                let frame = into_dmabuf(b, id);
+                let dst = hw_surface(hw.frames).unwrap();
+                gpu.convert_dmabuf(&dst, &frame, &mut Steps::new("test"))
+                    .unwrap_or_else(|e| panic!("{what}: {e:#}"));
+                assert_patches(&dst, format, &what);
+            }
+        }
+    }
+
+    #[test]
+    fn vaapi_dmabuf_odd_capture_size() {
+        // A 2389x1669 output is encoded at 2388x1668: the buffer is larger
+        // than the encoder by a column and a row, which are left out.
+        let (w, h) = (2388, 1668);
+        let Some((hw, mut gpu)) = gpu(w, h) else {
+            return;
+        };
+        let Some(dev) = gbm_device() else { return };
+        for mods in [
+            &[DRM_FORMAT_MOD_LINEAR][..],
+            &[I915_4_TILED, DRM_FORMAT_MOD_LINEAR],
+        ] {
+            let b = red_over_blue(&dev, w + 1, h + 1, PixelFormat::Xrgb8888, mods).unwrap();
+            let what = format!("{}x{} {}", w + 1, h + 1, modifier_name(b.modifier));
+            let frame = into_dmabuf(b, mods.len() as u64);
+            // The first conversion imports, the second finds the surface.
+            for pass in ["imported", "cached"] {
+                let dst = hw_surface(hw.frames).unwrap();
+                gpu.convert_dmabuf(&dst, &frame, &mut Steps::new("test"))
+                    .unwrap_or_else(|e| panic!("{what} {pass}: {e:#}"));
+                assert_red_over_blue(&dst, &format!("{what} {pass}"));
+            }
+        }
+    }
+
+    #[test]
+    fn vaapi_dmabuf_imports_once_and_evicts() {
+        let (w, h) = (320, 240);
+        let Some((hw, mut gpu)) = gpu(w, h) else {
+            return;
+        };
+        let Some(dev) = gbm_device() else { return };
+        let b = red_over_blue(&dev, w, h, PixelFormat::Xrgb8888, &[DRM_FORMAT_MOD_LINEAR]).unwrap();
+        let frame = into_dmabuf(b, 100);
+        let convert = |gpu: &mut GpuConvert, frame: &Dmabuf| {
+            let dst = hw_surface(hw.frames).unwrap();
+            gpu.convert_dmabuf(&dst, frame, &mut Steps::new("test"))
+                .unwrap();
+            dst
+        };
+        convert(&mut gpu, &frame);
+        let first = gpu.imports();
+        assert_eq!(first.len(), 1);
+        // The same buffer again: the same surface, no new import.
+        assert_red_over_blue(&convert(&mut gpu, &frame), "cached");
+        assert_eq!(gpu.imports(), first);
+        // Nine more buffers (the same memory under new ids): the cache keeps
+        // the eight most recent and the first goes.
+        for id in 1..=9 {
+            convert(
+                &mut gpu,
+                &Dmabuf {
+                    id,
+                    ..frame.clone()
+                },
+            );
+        }
+        let ids: Vec<u64> = gpu.imports().iter().map(|&(id, _)| id).collect();
+        assert_eq!(ids, (2..=9).collect::<Vec<_>>());
+        // Using one moves it to the back, so the next eviction spares it.
+        convert(
+            &mut gpu,
+            &Dmabuf {
+                id: 2,
+                ..frame.clone()
+            },
+        );
+        convert(&mut gpu, &frame);
+        let ids: Vec<u64> = gpu.imports().iter().map(|&(id, _)| id).collect();
+        assert_eq!(ids, [4, 5, 6, 7, 8, 9, 2, 100]);
+    }
+
+    #[test]
+    fn vaapi_dmabuf_imports_outlive_the_frames_reading_them() {
+        let (w, h) = (320, 240);
+        let Some((hw, mut gpu)) = gpu(w, h) else {
+            return;
+        };
+        let Some(dev) = gbm_device() else { return };
+        let b = red_over_blue(&dev, w, h, PixelFormat::Xrgb8888, &[DRM_FORMAT_MOD_LINEAR]).unwrap();
+        let convert = |gpu: &mut GpuConvert, frame: &Dmabuf| {
+            let dst = hw_surface(hw.frames).unwrap();
+            gpu.convert_dmabuf(&dst, frame, &mut Steps::new("test"))
+                .unwrap();
+        };
+        // The encoder still holds this frame: its conversion may be queued.
+        let held = into_dmabuf(b, 1);
+        convert(&mut gpu, &held);
+        // Eight more buffers, whose frames are done at once, push it out of
+        // the cache, but its surface stays until the frame goes.
+        let template = Dmabuf {
+            hold: Arc::new(()),
+            ..held.clone()
+        };
+        let other = |id| Dmabuf {
+            id,
+            hold: Arc::new(()),
+            ..template.clone()
+        };
+        for id in 2..=9 {
+            convert(&mut gpu, &other(id));
+        }
+        assert!(!gpu.imports().iter().any(|&(id, _)| id == 1));
+        assert_eq!(gpu.retired(), 1);
+        drop(held);
+        convert(&mut gpu, &other(10));
+        assert_eq!(gpu.retired(), 0);
+        // A frame from shared memory: capture left its GPU buffers, and
+        // their imports go too.
+        let (px, stride) = frame(w, h, 0);
+        let dst = hw_surface(hw.frames).unwrap();
+        gpu.convert(
+            &dst,
+            &px,
+            stride,
+            PixelFormat::Xrgb8888,
+            &mut Steps::new("test"),
+        )
+        .unwrap();
+        assert!(gpu.imports().is_empty());
+        assert_eq!(gpu.retired(), 0);
+    }
+
+    #[test]
+    fn vaapi_dmabuf_refusals_keep_the_gpu_conversion() {
+        let (w, h) = (320, 240);
+        let Some(mut e) = vaapi(w, h) else { return };
+        if !e.gpu_convert() {
+            eprintln!("skipped: no GPU colour conversion here");
+            return;
+        }
+        let Some(dev) = gbm_device() else { return };
+        // Smaller than the encoder.
+        let b = red_over_blue(
+            &dev,
+            w - 2,
+            h,
+            PixelFormat::Xrgb8888,
+            &[DRM_FORMAT_MOD_LINEAR],
+        )
+        .unwrap();
+        let Err(err) = e.encode_dmabuf(&into_dmabuf(b, 1), true, Instant::now()) else {
+            panic!("a smaller frame was encoded");
+        };
+        assert!(format!("{err:#}").contains("cannot fill"), "{err:#}");
+        assert!(err.is::<GpuFrameRefused>(), "{err:#}");
+        // A compressed layout, which iHD would turn black without an error.
+        // The memory is linear; the label alone must be refused.
+        let b = red_over_blue(&dev, w, h, PixelFormat::Xrgb8888, &[DRM_FORMAT_MOD_LINEAR]).unwrap();
+        let ccs = Dmabuf {
+            modifier: I915_4_TILED_LNL_CCS,
+            ..into_dmabuf(b, 2)
+        };
+        let Err(err) = e.encode_dmabuf(&ccs, true, Instant::now()) else {
+            panic!("a CCS frame was encoded");
+        };
+        let msg = format!("{err:#}");
+        assert!(msg.contains("I915_4_TILED_LNL_CCS"), "{msg}");
+        assert!(err.is::<GpuFrameRefused>(), "{msg}");
+        // The GPU conversion of system-memory frames is still on.
+        assert!(e.gpu_convert());
+        let (px, stride) = frame(w, h, 0);
+        let units = e
+            .encode(&px, stride, PixelFormat::Xrgb8888, true, Instant::now())
+            .unwrap();
+        assert!(units.first().is_some_and(|u| u.unit.is_idr));
+        assert!(e.gpu_convert());
     }
 }

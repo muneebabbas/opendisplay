@@ -170,7 +170,7 @@ fn after_failure(output_removed: bool, consecutive: u32) -> AfterFailure {
 
 /// Capture `output_name` through wlr-screencopy until `duration`, a stop
 /// request, or the output going away; frames go to `on_frame` as leases, as
-/// in [`super::capture::capture_shm`].
+/// in [`super::capture::capture`].
 pub fn capture_wlr(
     output_name: &str,
     include_cursor: bool,
