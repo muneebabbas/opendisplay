@@ -53,7 +53,7 @@ impl Mapping {
         Ok(Self { ptr, len })
     }
 
-    fn bytes(&self) -> &[u8] {
+    pub fn bytes(&self) -> &[u8] {
         // SAFETY: `ptr` maps `len` readable bytes for our lifetime.
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }

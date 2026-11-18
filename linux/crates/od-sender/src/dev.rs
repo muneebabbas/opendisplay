@@ -275,6 +275,9 @@ pub fn run(cmd: Dev) -> Result<()> {
                 (false, true) => bail!("--gpu-linear needs --gpu"),
                 (false, false) => None,
             };
+            if gpu.is_none() && gpu_decline_after.is_some() {
+                bail!("--gpu-decline-after needs --gpu");
+            }
             capture_test(
                 output,
                 seconds,
@@ -698,49 +701,35 @@ fn capture_test(
 fn save_dmabuf_ppm(buf: &crate::backend::Dmabuf, path: &std::path::Path) -> Result<()> {
     use std::os::fd::AsRawFd;
     unsafe extern "C" {
-        fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut u8;
-        fn munmap(addr: *mut u8, len: usize) -> i32;
         fn ioctl(fd: i32, request: std::ffi::c_ulong, ...) -> i32;
     }
-    const PROT_READ: i32 = 1;
-    const MAP_SHARED: i32 = 1;
-    const DMA_BUF_IOCTL_SYNC: u64 = 0x4008_6200;
+    const DMA_BUF_IOCTL_SYNC: std::ffi::c_ulong = 0x4008_6200;
     const SYNC_READ: u64 = 1;
     const SYNC_START: u64 = 0;
     const SYNC_END: u64 = 4;
     anyhow::ensure!(
-        buf.modifier == 0,
+        buf.modifier == crate::dmabuf::DRM_FORMAT_MOD_LINEAR,
         "--save of a GPU frame needs --gpu-linear (modifier is {})",
         crate::dmabuf::modifier_name(buf.modifier)
     );
     let plane = &buf.planes[0];
     let (w, h) = (buf.width as usize, buf.height as usize);
     let len = plane.offset as usize + plane.stride as usize * h;
-    let fd = plane.fd.as_raw_fd();
-    // SAFETY: maps `len` bytes of a dmabuf we hold open; checked for MAP_FAILED.
-    let ptr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ, MAP_SHARED, fd, 0) };
-    anyhow::ensure!(
-        ptr as isize != -1,
-        "mmap of the dmabuf: {}",
-        std::io::Error::last_os_error()
-    );
-    let mut sync = SYNC_START | SYNC_READ;
-    // SAFETY: `sync` is a valid dma_buf_sync for the ioctl.
-    let r = unsafe {
-        ioctl(
-            fd,
-            DMA_BUF_IOCTL_SYNC as std::ffi::c_ulong,
-            &mut sync as *mut u64,
-        )
+    let file = std::fs::File::from(plane.fd.try_clone()?);
+    let map = crate::wayland::shm_pool::Mapping::new(&file, len)?;
+    let sync = |flags: u64, what: &str| {
+        let mut sync = flags | SYNC_READ;
+        // SAFETY: `sync` is a valid `struct dma_buf_sync` for the ioctl on
+        // a dmabuf we hold open.
+        let r = unsafe { ioctl(file.as_raw_fd(), DMA_BUF_IOCTL_SYNC, &mut sync as *mut u64) };
+        if r != 0 {
+            warn!(
+                "DMA_BUF_IOCTL_SYNC {what}: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     };
-    if r != 0 {
-        warn!(
-            "DMA_BUF_IOCTL_SYNC start: {}",
-            std::io::Error::last_os_error()
-        );
-    }
-    // SAFETY: the mapping is `len` bytes and stays until munmap below.
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    sync(SYNC_START, "start");
     // Byte order in memory (little-endian fourccs): XRGB is B, G, R, X;
     // XBGR is R, G, B, X.
     let (r_at, b_at) = match buf.format {
@@ -748,21 +737,12 @@ fn save_dmabuf_ppm(buf: &crate::backend::Dmabuf, path: &std::path::Path) -> Resu
         crate::backend::PixelFormat::Xbgr8888 | crate::backend::PixelFormat::Abgr8888 => (0, 2),
     };
     let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
-    for row in bytes[plane.offset as usize..].chunks(plane.stride as usize) {
+    for row in map.bytes()[plane.offset as usize..].chunks(plane.stride as usize) {
         for px in row[..w * 4].chunks(4) {
             ppm.extend_from_slice(&[px[r_at], px[1], px[b_at]]);
         }
     }
-    let mut sync = SYNC_END | SYNC_READ;
-    // SAFETY: as above; then the mapping is released.
-    unsafe {
-        ioctl(
-            fd,
-            DMA_BUF_IOCTL_SYNC as std::ffi::c_ulong,
-            &mut sync as *mut u64,
-        );
-        munmap(ptr, len);
-    }
+    sync(SYNC_END, "end");
     std::fs::write(path, ppm)?;
     Ok(())
 }
