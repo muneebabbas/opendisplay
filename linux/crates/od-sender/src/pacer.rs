@@ -1,15 +1,18 @@
 //! When the encoder may start the next frame under the stream's frame-rate
 //! cap, with the time passed in so it can be tested without threads.
 //!
-//! A token bucket refilled at exactly the cap: each encode spends a token,
-//! and up to [`BURST`] are kept, so content at the cap that arrives early or
-//! late starts the moment it arrives and the long-run rate never exceeds
-//! the cap. That is the normal case: the virtual output refreshes at the
-//! stream's rate, so content arrives at the cap or slower.
+//! A token bucket: each encode spends a token, and up to [`BURST`] are
+//! kept, so content at the cap that arrives early or late starts the moment
+//! it arrives. That is the normal case: the virtual output refreshes at the
+//! stream's rate, so content arrives at the cap or slower. Tokens then
+//! accrue [`HEADROOM`] faster than the cap: a compositor clock a hair fast
+//! would otherwise drain a bucket refilled at exactly the cap for good, and
+//! every frame would wait for its token. Content at the cap cannot be sent
+//! faster than it arrives, so the headroom is not a higher rate.
 //!
 //! Content faster than the cap (a 120 Hz output under a 60 fps stream) is
 //! told apart by the measured interval between arrivals, and paced
-//! differently: starts are at least [`MIN_GAP`] of an interval apart, so
+//! differently: tokens accrue at exactly the cap, starts are at least [`MIN_GAP`] of an interval apart, so
 //! two never go one 120 Hz frame (8.3 ms) apart with the next 25 ms later;
 //! and a frame whose start is more than [`SLACK`] away is held, so that a
 //! newer frame replaces it, and the newest is encoded at the latest one
@@ -28,15 +31,18 @@ pub const SLACK: f64 = 0.12;
 /// Faster than the cap: the shortest gap between encode starts, as a
 /// fraction of an interval.
 pub const MIN_GAP: f64 = 0.75;
+/// At the cap: how much faster than the cap tokens accrue.
+pub const HEADROOM: f64 = 1.05;
 /// The source counts as faster than the cap once its mean arrival interval
 /// drops under this fraction of the cap's interval, and as at the cap again
 /// once it rises over [`FAST_LEAVE`]. Jitter does not move the mean of
-/// content at the cap.
-const FAST_ENTER: f64 = 0.8;
-const FAST_LEAVE: f64 = 0.9;
+/// content at the cap, and over [`MEAN_WINDOW`] intervals it barely moves
+/// the running mean (±1 ms at 60 Hz: about 1.5%).
+const FAST_ENTER: f64 = 0.93;
+const FAST_LEAVE: f64 = 0.97;
 /// Arrival intervals measured before the source can count as faster than
 /// the cap; also the window of the running mean (a plain mean until then).
-const MEAN_WINDOW: u32 = 8;
+const MEAN_WINDOW: u32 = 32;
 
 pub struct Pacer {
     fps: f64,
@@ -75,6 +81,8 @@ impl Pacer {
     /// A frame was captured at `at` (call once per new frame, not for a
     /// replay of an old one).
     pub fn arrived(&mut self, at: Instant) {
+        // Tokens so far accrue at the rate of the mode they accrued in.
+        self.refill(at);
         let Some(prev) = self.last_arrival.replace(at) else {
             return;
         };
@@ -101,8 +109,18 @@ impl Pacer {
         self.fast
     }
 
+    /// Tokens per second: the cap for content faster than it, else a little
+    /// more ([`HEADROOM`]).
+    fn rate(&self) -> f64 {
+        if self.fast {
+            self.fps
+        } else {
+            self.fps * HEADROOM
+        }
+    }
+
     fn refill(&mut self, now: Instant) {
-        let gained = now.saturating_duration_since(self.refilled).as_secs_f64() * self.fps;
+        let gained = now.saturating_duration_since(self.refilled).as_secs_f64() * self.rate();
         self.tokens = (self.tokens + gained).min(BURST);
         self.refilled = self.refilled.max(now);
     }
@@ -139,7 +157,7 @@ impl Pacer {
         // Rounded up to whole microseconds: a wake-up a few nanoseconds
         // short of the token would find it not yet there and look again at
         // once.
-        let need_us = ((1.0 - self.tokens) / self.fps * 1e6).max(0.0).ceil() as u64;
+        let need_us = ((1.0 - self.tokens) / self.rate() * 1e6).max(0.0).ceil() as u64;
         let due = (now + Duration::from_micros(need_us)).max(self.gap_until(now));
         if !self.fast || due.saturating_duration_since(now) <= self.slack {
             due
@@ -326,7 +344,8 @@ mod tests {
         v[((v.len() - 1) as f64 * q).round() as usize]
     }
 
-    /// Starts in any one-second window never exceed the cap plus the burst.
+    /// Starts in any one-second window never exceed the cap with its
+    /// headroom plus the burst (content at the cap is sent as it comes).
     fn assert_capped(cap: f32, starts: &[(Duration, Duration)]) {
         let s: Vec<_> = starts.iter().map(|(_, s)| *s).collect();
         for (i, &t) in s.iter().enumerate() {
@@ -335,7 +354,7 @@ mod tests {
                 .take_while(|&&u| u < t + Duration::from_secs(1))
                 .count();
             assert!(
-                n as f64 <= f64::from(cap) + BURST,
+                n as f64 <= f64::from(cap) * HEADROOM + BURST,
                 "{n} starts in 1 s from {t:?}"
             );
         }
@@ -368,6 +387,33 @@ mod tests {
     }
 
     #[test]
+    fn content_on_a_fast_clock_does_not_wait() {
+        // A compositor clock a hair fast (60.06 and 60.24 Hz): a bucket
+        // refilled at exactly the cap drains and every frame waits for its
+        // token, up to an interval. Without jitter, the worst case.
+        for period in [16_650, 16_600] {
+            let arrivals = every(period, 10, |_| 0);
+            let (starts, _) = run(60.0, &arrivals);
+            assert_eq!(starts.len(), arrivals.len(), "{period} µs: frames dropped");
+            let w = waits(&starts);
+            assert_eq!(
+                *w.last().unwrap(),
+                Duration::ZERO,
+                "{period} µs: a frame waited"
+            );
+        }
+    }
+
+    #[test]
+    fn content_just_over_the_cap_is_not_sent_much_faster() {
+        // 63 Hz content, still paced as at the cap: at most the headroom.
+        let arrivals = every(15_873, 10, |_| 0);
+        let (starts, _) = run(60.0, &arrivals);
+        let fps = starts.len() as f64 / 10.0;
+        assert!(fps <= 60.0 * HEADROOM + 0.5, "{fps} fps");
+    }
+
+    #[test]
     fn a_late_frame_does_not_cost_the_next_one() {
         // One frame in sixty 7 ms late, the rest on time: the late one and
         // the on-time one after it both go, at once.
@@ -382,7 +428,13 @@ mod tests {
         for (cap, hz) in [(60.0, 90), (60.0, 120), (60.0, 144), (120.0, 240)] {
             let (starts, _) = run(cap, &every(1_000_000 / hz, 10, |_| 0));
             assert_capped(cap, &starts);
-            let fps = starts.len() as f64 / 10.0;
+            // Once the source is measured (well within the first second),
+            // exactly the cap: no headroom for content faster than it.
+            let steady = starts
+                .iter()
+                .filter(|(_, s)| *s >= Duration::from_secs(1))
+                .count();
+            let fps = steady as f64 / (10.01 - 1.0);
             let c = f64::from(cap);
             assert!(
                 (c * 0.97..=c + 0.5).contains(&fps),
@@ -409,7 +461,7 @@ mod tests {
             for seed in 0..10 {
                 let (starts, _) = run(cap, &every(1_000_000 / hz, 10, uniform(seed, jitter)));
                 // The first frames come before the source is measured.
-                let g = gaps(&starts[10..]);
+                let g = gaps(&starts[40..]);
                 // A start may land up to a microsecond early of the gap:
                 // wake-ups are rounded to whole microseconds.
                 let min_gap = interval(cap).mul_f64(MIN_GAP);
@@ -430,7 +482,7 @@ mod tests {
             let period = (1e6 / f64::from(cap) / 2.0).round() as u64;
             for seed in 0..10 {
                 let (starts, _) = run(cap, &every(period, 10, uniform(seed, jitter)));
-                let g = gaps(&starts[10..]);
+                let g = gaps(&starts[40..]);
                 let (p1, p99) = (pct(&g, 0.01), pct(&g, 0.99));
                 let iv = interval(cap);
                 let spread = Duration::from_micros(2 * jitter + 500);
@@ -448,12 +500,12 @@ mod tests {
         let mut p = Pacer::new(60.0, t0);
         let ms = Duration::from_millis;
         let mut t = t0;
-        for _ in 0..30 {
+        for _ in 0..40 {
             t += Duration::from_micros(16_667);
             p.arrived(t);
         }
         assert!(!p.faster_than_cap(), "60 Hz content at a 60 fps cap");
-        for _ in 0..30 {
+        for _ in 0..40 {
             t += Duration::from_micros(8_333);
             p.arrived(t);
         }
