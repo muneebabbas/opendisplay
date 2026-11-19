@@ -24,8 +24,13 @@
 //! ([`Encoder::takes_dmabuf`]). A GPU frame the encoder cannot take keeps
 //! the capture in shared memory for the rest of the run.
 //!
-//! VA-API also encodes HEVC (`hevc_vaapi`, Main profile, the same low-latency
-//! settings), the only backend that does. The session picks the codec when
+//! `nvenc` — NVIDIA hardware encode through FFmpeg (`h264_nvenc`), opt-in
+//! too. NVIDIA's VA-API driver only decodes. NVENC converts RGB input with
+//! BT.601 whatever the stream says, so a CUDA kernel converts to BT.709
+//! NV12 in GPU memory first (`cuda.rs`); swscale on the CPU where it cannot.
+//!
+//! VA-API and NVENC also encode HEVC (`hevc_vaapi`, `hevc_nvenc`, Main
+//! profile, the same low-latency settings), the only backends that do. The session picks the codec when
 //! the receiver offers HEVC ([`can_encode_hevc`] says whether the GPU opens
 //! it); an [`Encoder`] never falls back to another codec by itself.
 
@@ -77,7 +82,7 @@ impl Backend {
         matches!(self, Backend::Vaapi | Backend::Nvenc)
     }
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Backend::Auto => "auto",
             Backend::V4l2m2m => "V4L2 M2M (hardware)",
@@ -149,7 +154,8 @@ impl std::fmt::Display for GpuFrameRefused {
 #[derive(Debug, Clone, Copy)]
 pub struct EncoderSettings {
     pub backend: Backend,
-    /// HEVC needs [`Backend::Vaapi`]; any other backend refuses it.
+    /// HEVC needs [`Backend::Vaapi`] or [`Backend::Nvenc`]; any other backend
+    /// refuses it.
     pub codec: Codec,
     pub bitrate_bps: u32,
     pub max_fps: f32,

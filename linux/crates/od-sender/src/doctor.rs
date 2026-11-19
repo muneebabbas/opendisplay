@@ -162,14 +162,20 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
             Err(e) => println!("  {b:?}: unavailable ({e:#})"),
         }
     }
-    println!("  (x264 and OpenH264 encode on the CPU; VA-API is opt-in: --encoder vaapi)");
+    println!(
+        "  (x264 and OpenH264 encode on the CPU; VA-API and NVENC are opt-in: \
+         --encoder vaapi, --encoder nvenc)"
+    );
     // 1080p: whether the GPU opens an HEVC encoder at all; a larger size is
     // probed again when a stream needs it.
     for b in [encoder::Backend::Vaapi, encoder::Backend::Nvenc] {
         if encoder::can_encode_hevc(b, 1920, 1080) {
-            println!("  {b:?} HEVC: ok (streamed when the receiver offers it)");
+            println!(
+                "  {} HEVC: ok (streamed when the receiver offers it)",
+                b.label()
+            );
         } else {
-            println!("  {b:?} HEVC: unavailable ({b:?} streams H.264)");
+            println!("  {} HEVC: unavailable (it streams H.264)", b.label());
         }
     }
 

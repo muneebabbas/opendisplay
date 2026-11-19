@@ -1,6 +1,6 @@
 //! H.264 through the system FFmpeg: libx264 in software, a V4L2 mem2mem
-//! hardware encoder, or VA-API (Intel/AMD), which also encodes HEVC
-//! (`hevc_vaapi`, same settings, Main profile). Capture hands us 4-byte RGB
+//! hardware encoder, VA-API (Intel/AMD) or NVENC (NVIDIA); the last two
+//! also encode HEVC (`hevc_vaapi`, `hevc_nvenc`, Main profile). Capture hands us 4-byte RGB
 //! pixels in the compositor's byte order ([`PixelFormat`]); swscale converts
 //! them to the encoder's 4:2:0 format with BT.709 limited-range
 //! coefficients, which the stream's VUI announces so the receiver converts
@@ -14,6 +14,10 @@
 //! capture pixels in system memory are first copied into a surface.
 //! Otherwise swscale converts as above and the NV12 frame is uploaded into
 //! such a surface before it is sent.
+//!
+//! NVENC takes CUDA frames: a CUDA kernel converts the capture's RGB to
+//! NV12 in GPU memory ([`CudaConvert`]), or swscale converts and the frame
+//! is uploaded, as for VA-API.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Once};
@@ -211,7 +215,7 @@ fn init() {
 }
 
 impl FfmpegEncoder {
-    /// `width`/`height` are already even. HEVC is VA-API only.
+    /// `width`/`height` are already even. HEVC is VA-API and NVENC only.
     pub fn new(kind: Kind, width: u32, height: u32, s: EncoderSettings) -> Result<Self> {
         init();
         let name = match (kind, s.codec) {
@@ -326,9 +330,12 @@ impl FfmpegEncoder {
                 }
             }
             Kind::Nvenc => {
-                // Constant-quality VBR under the same cap and quarter-second
-                // buffer as the others; the fastest preset tuned for
-                // ultra-low latency, no lookahead, one frame in flight.
+                // VBR under the same cap and quarter-second buffer as the
+                // others; the fastest preset tuned for ultra-low latency, one
+                // frame in flight. No `cq`: in constant-quality mode FFmpeg
+                // drops the average bitrate and the VBV buffer and leaves the
+                // driver to size it. qmin keeps a static screen from spending
+                // the whole budget on invisible detail.
                 v.set_bit_rate(s.bitrate_bps as usize);
                 v.set_max_bit_rate(s.bitrate_bps as usize);
                 // SAFETY: plain field write on a context we own and have not opened.
@@ -337,13 +344,15 @@ impl FfmpegEncoder {
                 opts.set("preset", "p1");
                 opts.set("tune", "ull");
                 opts.set("rc", "vbr");
-                opts.set("cq", "23");
+                opts.set("qmin", "18");
                 opts.set("zerolatency", "1");
                 opts.set("delay", "0");
                 opts.set("forced-idr", "1");
-                opts.set("rc-lookahead", "0");
-                opts.set("no-scenecut", "1");
-                opts.set("profile", "main");
+                if s.codec == Codec::Hevc {
+                    // 8-bit 4:2:0: what the receivers decode into NV12.
+                    // H.264 keeps NVENC's default High, as x264 and VA-API.
+                    opts.set("profile", "main");
+                }
             }
         }
         let enc = v
