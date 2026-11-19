@@ -24,12 +24,18 @@
 //! ([`Encoder::takes_dmabuf`]). A GPU frame the encoder cannot take keeps
 //! the capture in shared memory for the rest of the run.
 //!
-//! VA-API also encodes HEVC (`hevc_vaapi`, Main profile, the same low-latency
-//! settings), the only backend that does. The session picks the codec when
+//! `nvenc` — NVIDIA hardware encode through FFmpeg (`h264_nvenc`), opt-in
+//! too. NVIDIA's VA-API driver only decodes. NVENC converts RGB input with
+//! BT.601 whatever the stream says, so a CUDA kernel converts to BT.709
+//! NV12 in GPU memory first (`cuda.rs`); swscale on the CPU where it cannot.
+//!
+//! VA-API and NVENC also encode HEVC (`hevc_vaapi`, `hevc_nvenc`, Main
+//! profile, the same low-latency settings), the only backends that do. The session picks the codec when
 //! the receiver offers HEVC ([`can_encode_hevc`] says whether the GPU opens
 //! it); an [`Encoder`] never falls back to another codec by itself.
 
 mod convert;
+mod cuda;
 mod ffmpeg;
 mod openh264;
 mod stage;
@@ -51,12 +57,15 @@ use tracing::{debug, info};
 
 use crate::backend::{Frame, FrameBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
 pub enum Backend {
-    /// First that opens: v4l2m2m, x264, openh264. `vaapi` is opt-in.
+    /// First that opens: v4l2m2m, x264, openh264. `vaapi` and `nvenc` are
+    /// opt-in.
     Auto,
     V4l2m2m,
     Vaapi,
+    /// NVIDIA hardware encode (NVENC, through FFmpeg's `*_nvenc`).
+    Nvenc,
     X264,
     Openh264,
 }
@@ -68,29 +77,45 @@ pub fn v4l2m2m_present() -> bool {
     v4l2::h264_encoder() != v4l2::Presence::Absent
 }
 
+/// `false` when the NVIDIA driver's `libcuda.so.1` does not load, so
+/// [`Backend::Nvenc`] cannot open: no NVIDIA GPU, not a fault.
+pub fn nvenc_present() -> bool {
+    cuda::driver_present()
+}
+
 impl Backend {
-    fn label(self) -> &'static str {
+    /// Whether this backend can encode HEVC at all.
+    pub fn encodes_hevc(self) -> bool {
+        matches!(self, Backend::Vaapi | Backend::Nvenc)
+    }
+
+    pub fn label(self) -> &'static str {
         match self {
             Backend::Auto => "auto",
             Backend::V4l2m2m => "V4L2 M2M (hardware)",
             Backend::Vaapi => "VA-API (hardware)",
+            Backend::Nvenc => "NVENC (hardware)",
             Backend::X264 => "x264",
             Backend::Openh264 => "OpenH264",
         }
     }
 }
 
-/// Whether a VA-API HEVC encoder opens at this size. Opens a throwaway one
-/// through the same constructor the stream uses, once per size per process;
-/// logs once per size when it does not.
-pub fn can_encode_hevc(width: u32, height: u32) -> bool {
+/// Whether `backend`'s HEVC encoder opens at this size. Opens a throwaway
+/// one through the same constructor the stream uses, once per backend and
+/// size per process; logs once when it does not.
+pub fn can_encode_hevc(backend: Backend, width: u32, height: u32) -> bool {
+    if !backend.encodes_hevc() {
+        return false;
+    }
     let (width, height) = (width & !1, height & !1);
-    static CACHE: OnceLock<Mutex<HashMap<(u32, u32), bool>>> = OnceLock::new();
+    type Probed = HashMap<(Backend, u32, u32), bool>;
+    static CACHE: OnceLock<Mutex<Probed>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(&ok) = cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&(width, height))
+        .get(&(backend, width, height))
     {
         return ok;
     }
@@ -99,7 +124,7 @@ pub fn can_encode_hevc(width: u32, height: u32) -> bool {
         width,
         height,
         EncoderSettings {
-            backend: Backend::Vaapi,
+            backend,
             codec: Codec::Hevc,
             bitrate_bps: 2_000_000,
             max_fps: 60.0,
@@ -116,7 +141,7 @@ pub fn can_encode_hevc(width: u32, height: u32) -> bool {
     cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert((width, height), ok);
+        .insert((backend, width, height), ok);
     ok
 }
 
@@ -136,7 +161,8 @@ impl std::fmt::Display for GpuFrameRefused {
 #[derive(Debug, Clone, Copy)]
 pub struct EncoderSettings {
     pub backend: Backend,
-    /// HEVC needs [`Backend::Vaapi`]; any other backend refuses it.
+    /// HEVC needs [`Backend::Vaapi`] or [`Backend::Nvenc`]; any other backend
+    /// refuses it.
     pub codec: Codec,
     pub bitrate_bps: u32,
     pub max_fps: f32,
@@ -170,9 +196,9 @@ impl Encoder {
     /// row/column.
     pub fn new(width: u32, height: u32, s: EncoderSettings) -> Result<Self> {
         let (width, height) = (width & !1, height & !1);
-        if s.codec == Codec::Hevc && s.backend != Backend::Vaapi {
+        if s.codec == Codec::Hevc && !s.backend.encodes_hevc() {
             bail!(
-                "HEVC is only encoded by the VA-API backend, not {}",
+                "HEVC is only encoded by the VA-API and NVENC backends, not {}",
                 s.backend.label()
             );
         }
@@ -180,6 +206,7 @@ impl Encoder {
             Backend::Auto => &[Backend::V4l2m2m, Backend::X264, Backend::Openh264],
             Backend::V4l2m2m => &[Backend::V4l2m2m],
             Backend::Vaapi => &[Backend::Vaapi],
+            Backend::Nvenc => &[Backend::Nvenc],
             Backend::X264 => &[Backend::X264],
             Backend::Openh264 => &[Backend::Openh264],
         };
@@ -198,6 +225,8 @@ impl Encoder {
                         .map(|e| Imp::Ffmpeg(Box::new(e)))
                 }
                 Backend::Vaapi => ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::Vaapi, width, height, s)
+                    .map(|e| Imp::Ffmpeg(Box::new(e))),
+                Backend::Nvenc => ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::Nvenc, width, height, s)
                     .map(|e| Imp::Ffmpeg(Box::new(e))),
                 Backend::X264 => ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::X264, width, height, s)
                     .map(|e| Imp::Ffmpeg(Box::new(e))),
@@ -255,6 +284,15 @@ impl Encoder {
             (Imp::Ffmpeg(_), Backend::Vaapi, Codec::Hevc) => {
                 "VA-API (hardware) HEVC, CPU colour conversion"
             }
+            (Imp::Ffmpeg(e), Backend::Nvenc, Codec::Hevc) if e.gpu_convert() => {
+                "NVENC (hardware) HEVC, GPU colour conversion"
+            }
+            (Imp::Ffmpeg(_), Backend::Nvenc, Codec::Hevc) => {
+                "NVENC (hardware) HEVC, CPU colour conversion"
+            }
+            (Imp::Ffmpeg(e), Backend::Nvenc, Codec::H264) if e.gpu_convert() => {
+                "NVENC (hardware), GPU colour conversion"
+            }
             _ => self.backend.label(),
         }
     }
@@ -279,14 +317,14 @@ impl Encoder {
     /// Whether [`Self::encode`] takes [`FrameBuf::Dmabuf`] frames: VA-API
     /// with the colour conversion on the GPU.
     pub fn takes_dmabuf(&self) -> bool {
-        matches!(&self.imp, Imp::Ffmpeg(e) if e.gpu_convert())
+        matches!(&self.imp, Imp::Ffmpeg(e) if e.takes_dmabuf())
     }
 
     /// Frames at least this wide are converted by the [`ConvertStage`]
     /// ahead of the encoder.
     pub fn stage_min_width(&self) -> u32 {
         match self.backend {
-            Backend::Vaapi => 0,
+            Backend::Vaapi | Backend::Nvenc => 0,
             _ => MIN_STAGE_WIDTH,
         }
     }
@@ -319,7 +357,7 @@ impl Encoder {
             ) => e.encode(pixels, *stride, *format, force_idr, frame.captured_at),
             (FrameBuf::Yuv(y), Imp::Ffmpeg(e)) => e.encode_yuv(y, force_idr, frame.captured_at),
             (FrameBuf::Yuv(_), _) => bail!("{} takes RGB frames only", self.label()),
-            (FrameBuf::Dmabuf(d), Imp::Ffmpeg(e)) if e.gpu_convert() => {
+            (FrameBuf::Dmabuf(d), Imp::Ffmpeg(e)) if e.takes_dmabuf() => {
                 e.encode_dmabuf(d, force_idr, frame.captured_at)
             }
             (FrameBuf::Dmabuf(_), _) => {
@@ -350,7 +388,7 @@ mod tests {
             };
             let e = Encoder::new(320, 240, s).err().expect("must refuse HEVC");
             assert!(
-                format!("{e:#}").contains("HEVC is only encoded by the VA-API backend"),
+                format!("{e:#}").contains("HEVC is only encoded by the VA-API and NVENC backends"),
                 "{backend:?}: {e:#}"
             );
         }

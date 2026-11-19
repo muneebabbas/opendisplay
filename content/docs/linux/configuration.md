@@ -35,7 +35,7 @@ Each key works at the top of `sender.toml` and as a `run` option.
 | `scale` | `passthrough` | `passthrough`, `mac` or a number |
 | `bitrate-mbps` | `20` | Video bitrate in Mbit/s |
 | `max-fps` | `60` | Frame-rate cap |
-| `encoder` | `auto` | `auto`, `v4l2m2m`, `vaapi`, `x264` or `openh264` |
+| `encoder` | `auto` | `auto`, `v4l2m2m`, `vaapi`, `nvenc`, `x264` or `openh264` |
 | `cursor` | `auto` | `auto`, `video` or `off` (`true` / `false` mean `auto` / `off`) |
 | `capture` | `auto` | `auto`, `ext` or `wlr` |
 | `workspace` | next free one | Workspace name or number (Hyprland and Sway) |
@@ -93,7 +93,10 @@ hardware encoder through FFmpeg, where the machine has one), `x264`,
 VA-API driver and an FFmpeg built with VA-API) is never chosen by `auto` yet:
 it encodes and converts colours on the GPU, which takes most of the load off
 the CPU, but it can add some latency at the GPU's power-saving clocks. Where
-the driver cannot convert colours, the CPU does. Naming one forces it.
+the driver cannot convert colours, the CPU does. `nvenc` (NVIDIA GPUs
+through FFmpeg, tested on an RTX 3080; needs the NVIDIA driver and an FFmpeg
+built with NVENC) is opt-in too, and converts colours on the GPU with CUDA.
+Naming one forces it.
 `od-sender doctor` lists which encoders open on this machine, and which
 conversion VA-API uses.
 
@@ -170,7 +173,7 @@ position = "auto-right"
 scale = "passthrough"    # "passthrough", "mac" or a number
 bitrate-mbps = 20
 max-fps = 60
-encoder = "auto"         # "auto", "v4l2m2m", "vaapi", "x264" or "openh264"
+encoder = "auto"         # "auto", "v4l2m2m", "vaapi", "nvenc", "x264" or "openh264"
 cursor = "auto"          # "auto", "video" or "off" (true/false: auto/off)
 capture = "auto"         # "auto", "ext" or "wlr"
 workspace = "8"          # Hyprland/Sway: show workspace 8 on the virtual display

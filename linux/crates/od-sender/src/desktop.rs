@@ -89,7 +89,8 @@ pub struct OutputMode {
     /// Pixels, i.e. the capture raster.
     pub width: u32,
     pub height: u32,
-    /// Refresh rate: the receiver's panel rate.
+    /// Refresh rate: the stream's frame rate, so the compositor renders
+    /// only frames that are sent (the panel rate is the stream's ceiling).
     pub hz: u32,
     pub scale: f64,
 }
@@ -220,8 +221,8 @@ fn even_f(v: f64) -> u32 {
     even(v.clamp(0.0, f64::from(u32::MAX)) as u32)
 }
 
-/// The receiver's panel rate, as the output's refresh and the stream's
-/// ceiling.
+/// The receiver's panel rate, the stream's ceiling. The output refreshes at
+/// the stream's rate.
 fn panel_hz(hello: &Hello) -> u32 {
     hello
         .display_max_frame_rate
@@ -323,7 +324,12 @@ pub fn plan(hello: &Hello, opts: &DesktopOptions, codec: Codec) -> Result<Deskto
         output: OutputMode {
             width: output.w,
             height: output.h,
-            hz: panel_hz(hello),
+            // The stream's rate, not the panel's: a 120 Hz panel showing a
+            // 60 fps stream gets a 60 Hz output, so apps render only the
+            // frames that are sent and every one is evenly spaced. A 120 Hz
+            // output made content arrive at 120 Hz and the encoder pick
+            // every other frame, which with capture jitter came out uneven.
+            hz: fps,
             scale,
         },
         stream: StreamPlan {
@@ -700,7 +706,7 @@ mod tests {
             &h,
             &PASS,
             FactsSource::Panel,
-            ((2556, 1179, 120, 3.0, false), (2556, 1178, 60)),
+            ((2556, 1179, 60, 3.0, false), (2556, 1178, 60)),
         );
         // Mac rule: half the pixels at 2x, even points.
         check(
@@ -708,7 +714,7 @@ mod tests {
             &h,
             &MAC,
             FactsSource::Panel,
-            ((2556, 1176, 120, 2.0, false), (2556, 1176, 60)),
+            ((2556, 1176, 60, 2.0, false), (2556, 1176, 60)),
         );
     }
 
@@ -720,21 +726,21 @@ mod tests {
             &h,
             &PASS,
             FactsSource::Panel,
-            ((1179, 2556, 120, 3.0, false), (1178, 2556, 60)),
+            ((1179, 2556, 60, 3.0, false), (1178, 2556, 60)),
         );
         check(
             "iphone-p",
             &h,
             &MAC,
             FactsSource::Panel,
-            ((1176, 2556, 120, 2.0, false), (1176, 2556, 60)),
+            ((1176, 2556, 60, 2.0, false), (1176, 2556, 60)),
         );
     }
 
     #[test]
     fn ipad_pro() {
         let h = fixture!("ipad-pro-12.9");
-        let want = ((2732, 2048, 120, 2.0, false), (2732, 2048, 60));
+        let want = ((2732, 2048, 60, 2.0, false), (2732, 2048, 60));
         check("ipad", &h, &PASS, FactsSource::Panel, want);
         check("ipad", &h, &MAC, FactsSource::Panel, want);
     }
@@ -743,7 +749,7 @@ mod tests {
     fn ipad_air_2_decode_budget_lowers_the_rate_not_the_raster() {
         let h = fixture!("ipad-air-2");
         // 133,693,440 px/s over 2048x1536 = 42.5 fps.
-        let want = ((2048, 1536, 60, 2.0, false), (2048, 1536, 42));
+        let want = ((2048, 1536, 42, 2.0, false), (2048, 1536, 42));
         check("air2", &h, &PASS, FactsSource::Panel, want);
         check("air2", &h, &MAC, FactsSource::Panel, want);
     }
@@ -753,7 +759,7 @@ mod tests {
         // PROTOCOL.md §6.5: "For a 16:9 5K source that codec rule selects
         // 4096×2304 at 55 FPS"; the output follows the stream (#322).
         let h = fixture!("mac-5k");
-        let want = ((4096, 2304, 60, 2.0, true), (4096, 2304, 55));
+        let want = ((4096, 2304, 55, 2.0, true), (4096, 2304, 55));
         check("5k", &h, &PASS, FactsSource::Panel, want);
         check("5k", &h, &MAC, FactsSource::Panel, want);
         assert_eq!(h.power, Some(vec!["shutdown".into()]));
@@ -772,7 +778,7 @@ mod tests {
             &h,
             &MAC,
             FactsSource::Panel,
-            ((6400, 3600, 60, 2.0, false), (4096, 2304, 55)),
+            ((6400, 3600, 55, 2.0, false), (4096, 2304, 55)),
         );
         // Passthrough ignores points.
         check(
@@ -780,7 +786,7 @@ mod tests {
             &h,
             &PASS,
             FactsSource::Panel,
-            ((4096, 2304, 60, 2.0, true), (4096, 2304, 55)),
+            ((4096, 2304, 55, 2.0, true), (4096, 2304, 55)),
         );
     }
 
@@ -856,7 +862,7 @@ mod tests {
             &h,
             &opts(ScalePolicy::Fixed(2.0)),
             FactsSource::Panel,
-            ((2556, 1179, 120, 2.0, false), (2556, 1178, 60)),
+            ((2556, 1179, 60, 2.0, false), (2556, 1178, 60)),
         );
     }
 
@@ -869,10 +875,11 @@ mod tests {
         };
         assert_eq!(plan(&h, &o, Codec::H264).unwrap().stream.fps, 30);
         // A 120 Hz panel is a display fact, not a decoder promise: the
-        // legacy contract (no videoCaps) streams at most 60, like the Mac.
+        // legacy contract (no videoCaps) streams at most 60, like the Mac,
+        // and the output refreshes at the stream's 60.
         h.video_caps = None;
         let p = plan(&h, &PASS, Codec::H264).unwrap();
-        assert_eq!((p.output.hz, p.stream.fps), (120, 60));
+        assert_eq!((p.output.hz, p.stream.fps), (60, 60));
         let mut small = fixture!("iphone-15-pro-landscape");
         small.video_caps = None;
         assert_eq!(plan(&small, &PASS, Codec::H264).unwrap().stream.fps, 60);
@@ -1145,7 +1152,7 @@ mod tests {
         let p = plan(&fixture!("mac-5k"), &MAC, Codec::H264).unwrap();
         assert_eq!(
             p.to_string(),
-            "panel 5120x2880 @2 points 2560x1440 -> output 4096x2304 @60Hz scale 2 (2048x1152 logical), capped to stream -> h264 4096x2304 @55"
+            "panel 5120x2880 @2 points 2560x1440 -> output 4096x2304 @55Hz scale 2 (2048x1152 logical), capped to stream -> h264 4096x2304 @55"
         );
     }
 

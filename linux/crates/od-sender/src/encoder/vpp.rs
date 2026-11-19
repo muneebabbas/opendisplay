@@ -389,6 +389,7 @@ fn source_pixel(f: PixelFormat) -> Pixel {
 /// demand, so a slow encoder holding some never starves the next frame.
 pub(super) fn new_pool(
     device: *mut ff::ffi::AVBufferRef,
+    hw_format: ff::ffi::AVPixelFormat,
     sw_format: ff::ffi::AVPixelFormat,
     width: u32,
     height: u32,
@@ -402,7 +403,7 @@ pub(super) fn new_pool(
             bail!("av_hwframe_ctx_alloc failed");
         }
         let fc = (*frames).data as *mut AVHWFramesContext;
-        (*fc).format = AVPixelFormat::AV_PIX_FMT_VAAPI;
+        (*fc).format = hw_format;
         (*fc).sw_format = sw_format;
         (*fc).width = width as i32;
         (*fc).height = height as i32;
@@ -410,7 +411,7 @@ pub(super) fn new_pool(
         let err = av_hwframe_ctx_init(frames);
         if err < 0 {
             av_buffer_unref(&mut frames);
-            bail!("VA-API surface pool: {}", ff::Error::from(err));
+            bail!("{hw_format:?} surface pool: {}", ff::Error::from(err));
         }
         Ok(frames)
     }
@@ -890,8 +891,14 @@ impl GpuConvert {
         if let Some(&(_, p)) = self.sources.iter().find(|(f, _)| *f == pix) {
             return Ok(p);
         }
-        let pool = new_pool(self.device, pix.into(), self.width, self.height)
-            .with_context(|| format!("{pix:?} surfaces"))?;
+        let pool = new_pool(
+            self.device,
+            ff::ffi::AVPixelFormat::AV_PIX_FMT_VAAPI,
+            pix.into(),
+            self.width,
+            self.height,
+        )
+        .with_context(|| format!("{pix:?} surfaces"))?;
         self.sources.push((pix, pool));
         Ok(pool)
     }

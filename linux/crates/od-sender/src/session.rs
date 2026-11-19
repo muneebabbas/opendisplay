@@ -27,6 +27,7 @@ use crate::config::{self, Config, Layer};
 use crate::desktop::{self, Debounce, DesktopOptions, DesktopPlan, PlanError, StreamPlan};
 use crate::encoder::{self, ConvertStage, Encoded, Encoder, EncoderSettings, GpuFrameRefused};
 use crate::latest;
+use crate::pacer::{PaceLog, Pacer};
 use crate::wayland::cursor::base64;
 use opendisplay_proto::video::Codec;
 
@@ -151,22 +152,22 @@ pub struct Target {
     pub gpu_capture: bool,
 }
 
-/// Plan the stream, HEVC when it is a candidate: the encoder is VA-API (the
-/// only HEVC backend), HEVC has not failed in this run, and the receiver
-/// offers it. HEVC is used only if its plan succeeds and
-/// `probe(width, height)` says the GPU opens an encoder at the planned
+/// Plan the stream, HEVC when it is a candidate: the encoder is VA-API or
+/// NVENC (the HEVC backends), HEVC has not failed in this run, and the
+/// receiver offers it. HEVC is used only if its plan succeeds and
+/// `probe(backend, width, height)` says the GPU opens an encoder at the planned
 /// stream size; otherwise the plan is H.264.
 fn choose_plan(
     hello: &Hello,
     desktop: &DesktopOptions,
     backend: encoder::Backend,
     hevc_failed: bool,
-    probe: impl FnOnce(u32, u32) -> bool,
+    probe: impl FnOnce(encoder::Backend, u32, u32) -> bool,
 ) -> Result<DesktopPlan, PlanError> {
     let offered = desktop::preferred_codec(hello) == Codec::Hevc;
-    if backend == encoder::Backend::Vaapi && !hevc_failed && offered {
+    if backend.encodes_hevc() && !hevc_failed && offered {
         if let Ok(plan) = desktop::plan(hello, desktop, Codec::Hevc) {
-            if probe(plan.stream.width, plan.stream.height) {
+            if probe(backend, plan.stream.width, plan.stream.height) {
                 return Ok(plan);
             }
         }
@@ -303,7 +304,17 @@ struct EncodePipeline {
     /// A GPU frame failed to encode: sent once, after which capture stays
     /// in shared memory.
     gpu_failed_rx: mpsc::UnboundedReceiver<String>,
+    /// The encoder thread, joined on drop (bounded by [`ENCODE_JOIN`]).
+    thread: Option<std::thread::JoinHandle<()>>,
+    /// Wakes the encoder thread out of waiting for a frame, on drop.
+    raw_close: latest::Closer<Frame>,
 }
+
+/// How long dropping a pipeline waits for its encoder thread to close the
+/// encoder. Returning sooner let the process reach `exit()` with NVENC
+/// still open on that thread, and NVIDIA's libnvcuvid exit handlers then
+/// deadlocked with it (the sender hung on Ctrl+C about half the time).
+const ENCODE_JOIN: Duration = Duration::from_secs(2);
 
 /// Consecutive failed `encode` calls after which an HEVC stream is given up.
 const HEVC_MAX_CONSECUTIVE_FAILURES: u32 = 30;
@@ -315,6 +326,7 @@ impl EncodePipeline {
         let stop = Arc::new(AtomicBool::new(false));
         let force_idr = Arc::new(AtomicBool::new(true));
         let (raw_tx, raw_rx) = latest::channel::<Frame>();
+        let raw_close = raw_rx.closer();
         let (encoded_tx, encoded_rx) = mpsc::channel::<Encoded>(4);
         let (lost_tx, lost_rx) = mpsc::unbounded_channel();
         let (codec_failed_tx, codec_failed_rx) = mpsc::unbounded_channel::<String>();
@@ -326,7 +338,7 @@ impl EncodePipeline {
         let gpu_frames =
             (gpu_capture && settings.backend == encoder::Backend::Vaapi).then(GpuFrames::new);
         let enc_gpu = gpu_frames.clone();
-        spawn_reporting_panics("encode", lost_tx.clone(), move || {
+        let thread = spawn_reporting_panics("encode", lost_tx.clone(), move || {
             let mut encoder: Option<Encoder> = None;
             let hevc = settings.codec == Codec::Hevc;
             let mut failures = 0u32;
@@ -337,19 +349,34 @@ impl EncodePipeline {
             // inside the rate cap waits here for its slot rather than
             // being dropped: on a screen that then goes static it is the
             // last picture, and no further damage would ever replace it.
-            let mut pending: Option<Frame> = None;
-            let min_interval = Duration::from_secs_f32(1.0 / settings.max_fps.max(1.0));
-            // The cap is measured between encode starts, so encode time
-            // counts towards the interval instead of adding to it.
-            let mut last_start = Instant::now() - min_interval;
+            // With when it arrived, for the pacer.
+            let mut pending: Option<(Frame, Instant)> = None;
+            // Encode starts are held to the frame-rate cap by the pacer,
+            // which keeps the freshest frame rather than an old one that
+            // waited when content is faster than the cap (pacer.rs).
+            let mut pacer = Pacer::new(settings.max_fps, Instant::now());
+            // At debug level: how evenly frames arrive and encodes start.
+            let mut pace_log =
+                tracing::enabled!(tracing::Level::DEBUG).then(|| PaceLog::new(settings.max_fps));
             while !enc_stop.load(Ordering::Relaxed) {
-                let timeout = if pending.is_some() {
-                    min_interval.saturating_sub(last_start.elapsed())
-                } else {
-                    Duration::from_millis(100)
+                let now = Instant::now();
+                let timeout = match &pending {
+                    Some((_, arrived)) => {
+                        pacer.wake_at(now, *arrived).saturating_duration_since(now)
+                    }
+                    None => Duration::from_millis(100),
                 };
                 match raw_rx.recv_timeout(timeout) {
-                    Ok(f) => pending = Some(f),
+                    Ok(f) => {
+                        // When it was captured, not received: the convert
+                        // stage and a busy encoder delay the receipt.
+                        let at = f.captured_at;
+                        pacer.arrived(at);
+                        if let Some(l) = pace_log.as_mut() {
+                            l.arrived(at);
+                        }
+                        pending = Some((f, at));
+                    }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(_) => break,
                 }
@@ -358,18 +385,30 @@ impl EncodePipeline {
                     last = None;
                     continue;
                 }
-                let frame = if pending.is_some() {
-                    if last_start.elapsed() < min_interval {
-                        continue;
+                if pending.is_none() && enc_force.load(Ordering::Relaxed) {
+                    // Static screen and an IDR was asked for: replay (§5.3),
+                    // under the cap like any frame.
+                    if let Some(f) = last.take() {
+                        pending = Some((f, Instant::now()));
                     }
-                    pending.take().unwrap()
-                } else if enc_force.load(Ordering::Relaxed) && last.is_some() {
-                    // Static screen and an IDR was asked for: replay (§5.3).
-                    last.take().unwrap()
-                } else {
+                }
+                if pending.is_none() {
                     continue;
-                };
-                last_start = Instant::now();
+                }
+                let now = Instant::now();
+                if !pacer.ready(now) {
+                    continue;
+                }
+                pacer.start(now);
+                if let Some(line) = pace_log.as_mut().and_then(|l| l.started(now)) {
+                    let source = if pacer.faster_than_cap() {
+                        "faster than the cap"
+                    } else {
+                        "at or below the cap"
+                    };
+                    debug!("{line} | source {source}");
+                }
+                let (frame, _) = pending.take().expect("checked above");
                 let (w, h) = frame.dimensions();
                 if encoder
                     .as_ref()
@@ -482,6 +521,8 @@ impl EncodePipeline {
             codec_failed_rx,
             gpu_frames,
             gpu_failed_rx,
+            thread: Some(thread),
+            raw_close,
         })
     }
 
@@ -510,6 +551,24 @@ impl EncodePipeline {
 impl Drop for EncodePipeline {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // Wake the thread wherever it waits: for a frame, or to hand one
+        // over on a full `encoded` channel (nobody drains it any more). It
+        // then finishes the encode in flight, if any, and drops (closes) the
+        // encoder.
+        self.raw_close.close();
+        self.encoded_rx.close();
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        let deadline = Instant::now() + ENCODE_JOIN;
+        while !thread.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if thread.is_finished() {
+            let _ = thread.join();
+        } else {
+            warn!("encode thread did not finish within {ENCODE_JOIN:?}; leaving it");
+        }
     }
 }
 
@@ -1458,7 +1517,7 @@ mod tests {
             &DesktopOptions::default(),
             backend,
             hevc_failed,
-            |w, h| {
+            |_, w, h| {
                 probed.push((w, h));
                 probe_ok
             },

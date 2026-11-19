@@ -22,6 +22,11 @@ Video is encoded on the CPU (x264) by default. Hardware encoding through
 VA-API (tested on Intel) is available as an opt-in, `--encoder vaapi`, when
 od-sender is built against an FFmpeg with VA-API, as the Arch package is; the
 release tarball does not have it yet.
+NVIDIA GPUs encode through NVENC, also opt-in: `--encoder nvenc` (tested on
+an RTX 3080), with the NVIDIA driver and an FFmpeg built with NVENC, as the
+Arch package is; the release tarball does not have it. It also streams HEVC
+when the receiver offers it, and converts colours on the GPU (a small CUDA
+kernel); capture stays in shared memory, copied to the GPU each frame.
 With `--encoder vaapi` the stream is HEVC when the receiver offers it (the
 iPad and Mac apps do) and the GPU can encode it, otherwise H.264. If HEVC
 fails, od-sender falls back to H.264 for the rest of the run.
@@ -49,7 +54,7 @@ Reports are very welcome ([#299](https://github.com/peetzweg/opendisplay/issues/
 | **Expected to work** | Arch / Omarchy on x86_64. Any distro with Hyprland 0.55+. iPad and Android (Google Play beta) as receivers: Android streamed fine in a first session (Pixel 10a, 53 fps, 33 ms), but touch, scroll, rotation, lock and quit are not checked yet |
 | **Experimental** | **Sway 1.10+**, **KDE Plasma 6.8+** (6.7 and older with the desktop entry in place, see [KDE Plasma](#kde-plasma)), **GNOME 50+** (older GNOME may work, untested). Verified on headless desktops only |
 | **Existing outputs only** | niri, COSMIC, river, labwc, Wayfire and similar: `od-sender run --output <name>` streams an output you created yourself, if the compositor offers the screen-capture and virtual-pointer protocols `od-sender doctor` lists |
-| **Not supported yet** | X11 sessions, Hyprland older than 0.55, Flatpak, SteamOS Gaming Mode, USB cable transport, HEVC without `--encoder vaapi`, Apple Pencil pressure (mapped to a plain pointer), audio, mirror mode |
+| **Not supported yet** | X11 sessions, Hyprland older than 0.55, Flatpak, SteamOS Gaming Mode, USB cable transport, HEVC without `--encoder vaapi` or `nvenc`, Apple Pencil pressure (mapped to a plain pointer), audio, mirror mode |
 
 On an unsupported desktop `od-sender` exits with a message that names what is
 missing.
@@ -189,7 +194,7 @@ Useful `run` options:
 | `--scale` | `passthrough` | `passthrough` (the receiver's own, 3 on most iPhones), `mac` (2 for Retina-class screens, else 1, like the Mac sender) or a number. GNOME and Hyprland round to a scale they support (GNOME: an iPhone's 3 becomes 2; Hyprland: a Pixel's 2.625 becomes 2.667). If text is too small, try a larger number |
 | `--bitrate-mbps` | `20` | Video bitrate |
 | `--max-fps` | 60 | Frame-rate cap; above 60 only when the receiver's decoder advertises it, and never above its panel rate |
-| `--encoder` | `auto` | `auto`, `v4l2m2m`, `vaapi`, `x264` or `openh264` |
+| `--encoder` | `auto` | `auto`, `v4l2m2m`, `vaapi`, `nvenc`, `x264` or `openh264` |
 | `--cursor` | `auto` | `auto`, `video` (always paint the cursor into the video) or `off`; `--no-cursor` is `off`. `auto` sends the cursor separately when the receiver and desktop support it, which today means never on Hyprland |
 | `--capture` | `auto` | Screen-capture protocol on Hyprland and Sway: `auto`, `ext` or `wlr`. `auto` uses `wlr` on Hyprland before 0.57, whose `ext` capture can crash when a display disappears |
 | `--workspace` | next free one | Show this workspace (name or number) on the virtual display, keeping your focus where it is. Hyprland and Sway; ignored with a warning on KDE Plasma and GNOME |
@@ -222,7 +227,7 @@ position = "auto-right"
 scale = "passthrough"    # "passthrough", "mac" or a number
 bitrate-mbps = 20
 max-fps = 60
-encoder = "auto"         # "auto", "v4l2m2m", "vaapi", "x264" or "openh264"
+encoder = "auto"         # "auto", "v4l2m2m", "vaapi", "nvenc", "x264" or "openh264"
 cursor = "auto"          # "auto", "video" or "off" (true/false: auto/off)
 capture = "auto"         # "auto", "ext" or "wlr"
 workspace = "8"          # Hyprland/Sway: show workspace 8 on the virtual display
@@ -368,7 +373,7 @@ rm -r ~/.config/opendisplay                              # optional: your settin
   encode and the colour conversion (and on Hyprland the capture copy) to
   the GPU, which takes most of the load off the CPU, but it can add some
   latency at the GPU's power-saving clocks and is not chosen automatically
-  yet.
+  yet. `--encoder nvenc` does the same on NVIDIA GPUs.
 * **Sway, KDE Plasma and GNOME are untested on real desktops.** See
   [Supported setups](#supported-setups).
 * **Android** is untested beyond a first session: touch, scroll, rotation,

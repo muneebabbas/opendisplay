@@ -1,6 +1,7 @@
 //! Run-time loading of the system libraries the static release build must
-//! not link: libva (`encoder/vpp.rs`) and libgbm (`dmabuf.rs`). A machine
-//! without them still runs, without the features that need them.
+//! not link: libva (`encoder/vpp.rs`), libgbm (`dmabuf.rs`) and the NVIDIA
+//! driver's libcuda (`encoder/cuda.rs`). A machine without them still runs,
+//! without the features that need them.
 
 use std::ffi::{c_char, c_int, c_void};
 

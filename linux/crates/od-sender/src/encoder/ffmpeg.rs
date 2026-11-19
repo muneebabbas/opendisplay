@@ -1,6 +1,6 @@
 //! H.264 through the system FFmpeg: libx264 in software, a V4L2 mem2mem
-//! hardware encoder, or VA-API (Intel/AMD), which also encodes HEVC
-//! (`hevc_vaapi`, same settings, Main profile). Capture hands us 4-byte RGB
+//! hardware encoder, VA-API (Intel/AMD) or NVENC (NVIDIA); the last two
+//! also encode HEVC (`hevc_vaapi`, `hevc_nvenc`, Main profile). Capture hands us 4-byte RGB
 //! pixels in the compositor's byte order ([`PixelFormat`]); swscale converts
 //! them to the encoder's 4:2:0 format with BT.709 limited-range
 //! coefficients, which the stream's VUI announces so the receiver converts
@@ -14,6 +14,10 @@
 //! capture pixels in system memory are first copied into a surface.
 //! Otherwise swscale converts as above and the NV12 frame is uploaded into
 //! such a surface before it is sent.
+//!
+//! NVENC takes CUDA frames: a CUDA kernel converts the capture's RGB to
+//! NV12 in GPU memory ([`CudaConvert`]), or swscale converts and the frame
+//! is uploaded, as for VA-API.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Once};
@@ -27,6 +31,7 @@ use opendisplay_proto::video::{AccessUnit, Codec, ParameterSets, access_units_fo
 use tracing::{debug, warn};
 
 use super::convert::{Converter, band_count};
+use super::cuda::CudaConvert;
 use super::stage::{YuvFrame, new_video, tag_bt709};
 use super::steps::Steps;
 use super::vpp::{GpuConvert, hw_surface, new_pool};
@@ -38,6 +43,7 @@ pub enum Kind {
     X264,
     V4l2m2m,
     Vaapi,
+    Nvenc,
 }
 
 /// The VA-API device and the surface pool the encoder draws from. Owns one
@@ -55,11 +61,36 @@ impl HwFrames {
     /// Open the default VA-API device (libva picks the render node) and a
     /// pool of NV12 surfaces at the encode size.
     fn new(width: u32, height: u32) -> Result<Self> {
+        Self::open(
+            ff::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+            ff::ffi::AVPixelFormat::AV_PIX_FMT_VAAPI,
+            width,
+            height,
+        )
+    }
+
+    /// The default CUDA device and a pool of NV12 frames in GPU memory.
+    fn cuda(width: u32, height: u32) -> Result<Self> {
+        Self::open(
+            ff::ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_CUDA,
+            ff::ffi::AVPixelFormat::AV_PIX_FMT_CUDA,
+            width,
+            height,
+        )
+    }
+
+    fn open(
+        kind: ff::ffi::AVHWDeviceType,
+        hw_format: ff::ffi::AVPixelFormat,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
         use ff::ffi::*;
         let mut hw = Self {
             device: std::ptr::null_mut(),
             frames: std::ptr::null_mut(),
         };
+        let _open = gpu_open_lock();
         // SAFETY: out-pointers are valid; on failure FFmpeg leaves them null
         // and Drop unrefs only what was created. `av_hwframe_ctx_alloc`
         // returned non-null, so its `data` is an `AVHWFramesContext` we may
@@ -67,16 +98,22 @@ impl HwFrames {
         unsafe {
             let err = av_hwdevice_ctx_create(
                 &mut hw.device,
-                AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                kind,
                 std::ptr::null(),
                 std::ptr::null_mut(),
                 0,
             );
             if err < 0 {
-                bail!("no VA-API device: {}", ff::Error::from(err));
+                bail!("no {kind:?} device: {}", ff::Error::from(err));
             }
         }
-        hw.frames = new_pool(hw.device, AVPixelFormat::AV_PIX_FMT_NV12, width, height)?;
+        hw.frames = new_pool(
+            hw.device,
+            hw_format,
+            AVPixelFormat::AV_PIX_FMT_NV12,
+            width,
+            height,
+        )?;
         Ok(hw)
     }
 
@@ -148,6 +185,10 @@ pub struct FfmpegEncoder {
     /// logged; later drops log at debug so a driver that never sends them
     /// in-band does not warn on every frame.
     warned_no_sets: bool,
+    /// NVENC only: converts the capture's RGB to NV12 on the GPU with CUDA.
+    /// `None` means the convert stage does it, on the CPU. Declared before
+    /// `hw` so it is dropped while the CUDA context it uses still exists.
+    cuda: Option<CudaConvert>,
     /// VA-API only: where converted frames are uploaded before encoding.
     /// Declared after `enc` so the codec drops its references first.
     hw: Option<HwFrames>,
@@ -165,6 +206,19 @@ pub struct FfmpegEncoder {
 
 static INIT: Once = Once::new();
 
+/// Held while a GPU device or a hardware encoder opens. NVIDIA's VA-API
+/// driver calls `cuInit` from its library constructor, inside `dlopen`
+/// (holding the loader lock), while `cuInit` itself `dlopen`s: a VA-API
+/// device and a CUDA one opening at once in one process deadlock. The
+/// sender opens one encoder at a time, so in practice this is the parallel
+/// `cargo test` on an NVIDIA machine (it hung every run); opening them one
+/// at a time cannot deadlock.
+static GPU_OPEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn gpu_open_lock() -> std::sync::MutexGuard<'static, ()> {
+    GPU_OPEN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn init() {
     INIT.call_once(|| {
         let _ = ff::init();
@@ -175,7 +229,7 @@ fn init() {
 }
 
 impl FfmpegEncoder {
-    /// `width`/`height` are already even. HEVC is VA-API only.
+    /// `width`/`height` are already even. HEVC is VA-API and NVENC only.
     pub fn new(kind: Kind, width: u32, height: u32, s: EncoderSettings) -> Result<Self> {
         init();
         let name = match (kind, s.codec) {
@@ -183,6 +237,8 @@ impl FfmpegEncoder {
             (Kind::V4l2m2m, Codec::H264) => "h264_v4l2m2m",
             (Kind::Vaapi, Codec::H264) => "h264_vaapi",
             (Kind::Vaapi, Codec::Hevc) => "hevc_vaapi",
+            (Kind::Nvenc, Codec::H264) => "h264_nvenc",
+            (Kind::Nvenc, Codec::Hevc) => "hevc_nvenc",
             (_, Codec::Hevc) => bail!("{kind:?} does not encode HEVC"),
         };
         let codec = ff::encoder::find_by_name(name)
@@ -190,6 +246,9 @@ impl FfmpegEncoder {
         let format = pick_format(&codec, kind);
         let hw = match kind {
             Kind::Vaapi => Some(HwFrames::new(width, height)?),
+            // CUDA frames: converted on the GPU, or uploaded by the driver's
+            // DMA, instead of NVENC copying system memory on the CPU.
+            Kind::Nvenc => Some(HwFrames::cuda(width, height)?),
             _ => None,
         };
 
@@ -200,7 +259,11 @@ impl FfmpegEncoder {
         v.set_height(height);
         match &hw {
             Some(hw) => {
-                v.set_format(Pixel::VAAPI);
+                v.set_format(if kind == Kind::Nvenc {
+                    Pixel::CUDA
+                } else {
+                    Pixel::VAAPI
+                });
                 // SAFETY: field write on a context we own and have not
                 // opened; the context takes its own reference.
                 unsafe {
@@ -278,16 +341,65 @@ impl FfmpegEncoder {
                     opts.set("profile", "main");
                 }
             }
+            Kind::Nvenc => {
+                // VBR under the same cap and quarter-second buffer as the
+                // others; the fastest preset tuned for ultra-low latency, one
+                // frame in flight. No `cq`: in constant-quality mode FFmpeg
+                // drops the average bitrate and the VBV buffer and leaves the
+                // driver to size it. qmin keeps a static screen from spending
+                // the whole budget on invisible detail.
+                v.set_bit_rate(s.bitrate_bps as usize);
+                v.set_max_bit_rate(s.bitrate_bps as usize);
+                // SAFETY: plain field write on a context we own and have not opened.
+                unsafe { (*v.as_mut_ptr()).rc_buffer_size = (s.bitrate_bps / 4) as i32 };
+                v.set_gop(i32::MAX as u32);
+                opts.set("preset", "p1");
+                opts.set("tune", "ull");
+                opts.set("rc", "vbr");
+                opts.set("qmin", "18");
+                opts.set("zerolatency", "1");
+                opts.set("delay", "0");
+                opts.set("forced-idr", "1");
+                if s.codec == Codec::Hevc {
+                    // 8-bit 4:2:0: what the receivers decode into NV12.
+                    // H.264 keeps NVENC's default High, as x264 and VA-API.
+                    opts.set("profile", "main");
+                }
+            }
         }
-        let enc = v
-            .open_with(opts)
-            .with_context(|| format!("opening {name} at {width}x{height}"))?;
+        let enc = {
+            let _open = gpu_open_lock();
+            v.open_with(opts)
+        }
+        .with_context(|| format!("opening {name} at {width}x{height}"))?;
 
         let convert = Converter::new(width, height, format, band_count(height, s.threads))?;
 
         let yuv = new_video(format, width, height);
 
-        let (gpu, gpu_failed) = hw.as_ref().map_or((None, false), gpu_convert);
+        let (gpu, gpu_failed) = match (&hw, kind) {
+            (Some(hw), Kind::Vaapi) => gpu_convert(hw),
+            _ => (None, false),
+        };
+        let cuda = match (&hw, kind) {
+            (Some(hw), Kind::Nvenc) => {
+                // Under GPU_OPEN: loading the PTX may dlopen libcuda's JIT.
+                let opened = {
+                    let _open = gpu_open_lock();
+                    CudaConvert::new(hw.device)
+                };
+                match opened {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        warn!(
+                            "NVENC: GPU colour conversion unavailable, converting on the CPU: {e:#}"
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
 
         Ok(Self {
             codec: s.codec,
@@ -301,6 +413,7 @@ impl FfmpegEncoder {
             hw,
             gpu,
             gpu_failed,
+            cuda,
             steps: Steps::new(name),
         })
     }
@@ -313,6 +426,11 @@ impl FfmpegEncoder {
     /// Whether the GPU converts colours: the encoder then takes the capture's
     /// RGB frames itself ([`Self::encode`]) and none are pre-converted.
     pub fn gpu_convert(&self) -> bool {
+        (self.gpu.is_some() && !self.gpu_failed) || self.cuda.is_some()
+    }
+
+    /// Whether GPU buffers can be encoded: VA-API's GPU conversion only.
+    pub fn takes_dmabuf(&self) -> bool {
         self.gpu.is_some() && !self.gpu_failed
     }
 
@@ -326,6 +444,25 @@ impl FfmpegEncoder {
     ) -> Result<Vec<Encoded>> {
         let t0 = Instant::now();
         self.steps.start();
+        if let (Some(cuda), Some(hw)) = (&mut self.cuda, &self.hw) {
+            let converted = hw_surface(hw.frames).and_then(|mut surface| {
+                cuda.convert(&surface, pixels, stride, format)?;
+                tag_bt709(&mut surface);
+                Ok(surface)
+            });
+            match converted {
+                Ok(mut surface) => {
+                    self.steps.lap("cuda_convert");
+                    return self.send(&mut surface, None, force_idr, captured_at, t0);
+                }
+                Err(e) => {
+                    warn!(
+                        "NVENC colour conversion failed, converting on the CPU from now on: {e:#}"
+                    );
+                    self.cuda = None;
+                }
+            }
+        }
         if let (Some(gpu), false) = (&mut self.gpu, self.gpu_failed) {
             match Self::convert_on_gpu(
                 gpu,
@@ -593,6 +730,7 @@ fn pick_format(codec: &ff::Codec, kind: Kind) -> Pixel {
         Kind::X264 => &[Pixel::YUV420P, Pixel::NV12],
         Kind::V4l2m2m => &[Pixel::NV12, Pixel::YUV420P],
         Kind::Vaapi => return Pixel::NV12,
+        Kind::Nvenc => &[Pixel::NV12, Pixel::YUV420P],
     };
     let listed: Vec<Pixel> = codec
         .video()
@@ -914,6 +1052,7 @@ mod tests {
             threads: 1,
         };
         for kind in [Kind::X264, Kind::V4l2m2m] {
+            // NVENC does encode HEVC.
             let e = FfmpegEncoder::new(kind, 320, 240, s).err().unwrap();
             assert!(format!("{e:#}").contains("does not encode HEVC"), "{e:#}");
         }
@@ -1130,6 +1269,155 @@ mod tests {
 
     fn gpu_encodes_the_right_colours(wire: Codec) {
         gpu_encodes_the_right_colours_from(wire, false);
+    }
+
+    /// The NVENC encoder for `codec`, or `None` (test skipped) where this
+    /// machine has no NVIDIA encoder: no `h264_nvenc` in this FFmpeg, or no
+    /// CUDA device. Where both exist, failing to open it fails the test: on
+    /// the one machine these tests mean anything, a bad option or a pool
+    /// regression must not read as a skip.
+    fn nvenc_codec(codec: Codec, w: u32, h: u32) -> Option<FfmpegEncoder> {
+        init();
+        if ff::encoder::find_by_name("h264_nvenc").is_none() {
+            eprintln!("skipped: no NVENC in this FFmpeg");
+            return None;
+        }
+        if let Err(e) = HwFrames::cuda(w, h) {
+            eprintln!("skipped: no CUDA device here ({e:#})");
+            return None;
+        }
+        let s = EncoderSettings {
+            codec,
+            backend: Backend::Nvenc,
+            ..SETTINGS
+        };
+        Some(
+            FfmpegEncoder::new(Kind::Nvenc, w, h, s)
+                .unwrap_or_else(|e| panic!("{codec} NVENC with a CUDA device: {e:#}")),
+        )
+    }
+
+    /// `rows` rows of `PATCHES` blocks, row `r` rotated by `r` patches, so
+    /// every block of a column differs from the one above it; `cols` blocks
+    /// wide (not a multiple of the patch count makes a width that is not a
+    /// multiple of 64 bytes per row in NV12), each pixel row `pad` bytes
+    /// longer than the picture, as a capture of a wider buffer.
+    fn patch_grid(format: PixelFormat, cols: usize, rows: usize, pad: usize) -> (Vec<u8>, u32) {
+        let stride = cols * BLOCK * 4 + pad;
+        let mut v = vec![0xa5u8; stride * BLOCK * rows];
+        for (y, line) in v.chunks_exact_mut(stride).enumerate() {
+            let r = y / BLOCK;
+            for c in 0..cols {
+                let [red, g, b] = PATCHES[(c + r) % PATCHES.len()];
+                let px = match format {
+                    PixelFormat::Xrgb8888 | PixelFormat::Argb8888 => [b, g, red, 0x7f],
+                    PixelFormat::Xbgr8888 | PixelFormat::Abgr8888 => [red, g, b, 0x7f],
+                };
+                for p in line[c * BLOCK * 4..(c + 1) * BLOCK * 4].chunks_exact_mut(4) {
+                    p.copy_from_slice(&px);
+                }
+            }
+        }
+        (v, stride as u32)
+    }
+
+    /// BT.709 limited-range [Y, Cb, Cr] of each of `PATCHES`.
+    const PATCH_LEVELS: [[u8; 3]; 6] = [
+        [63, 102, 240],
+        [173, 42, 26],
+        [32, 240, 118],
+        [235, 128, 128],
+        [16, 128, 128],
+        [126, 128, 128],
+    ];
+
+    /// Every block of a decoded [`patch_grid`] within 4 levels, sampled
+    /// off-centre (a quarter in) so a row or chroma-row offset shows.
+    fn assert_grid_levels(out: &ff::frame::Video, cols: usize, rows: usize, what: &str) {
+        for r in 0..rows {
+            for c in 0..cols {
+                let want = PATCH_LEVELS[(c + r) % PATCHES.len()];
+                let (x, y) = (c * BLOCK + BLOCK / 4, r * BLOCK + BLOCK / 4);
+                let got = [
+                    out.data(0)[y * out.stride(0) + x],
+                    out.data(1)[(y / 2) * out.stride(1) + x / 2],
+                    out.data(2)[(y / 2) * out.stride(2) + x / 2],
+                ];
+                assert!(
+                    got.iter()
+                        .zip(want)
+                        .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 4),
+                    "{what} block ({c}, {r}): decoded {got:?}, expected {want:?}"
+                );
+            }
+        }
+    }
+
+    /// NVENC test pictures: 7 blocks wide (448 px, not a multiple of the
+    /// 6 patches nor of 64 bytes per NV12 row in a pitched pool), 3 rows,
+    /// captured with 96 bytes of padding per row.
+    const NV_COLS: usize = 7;
+    const NV_ROWS: usize = 3;
+    const NV_PAD: usize = 96;
+
+    #[test]
+    fn nvenc_gpu_encodes_the_right_colours() {
+        for wire in [Codec::H264, Codec::Hevc] {
+            let (w, h) = ((NV_COLS * BLOCK) as u32, (NV_ROWS * BLOCK) as u32);
+            let Some(e) = nvenc_codec(wire, w, h) else {
+                return;
+            };
+            assert!(e.gpu_convert(), "NVENC opened without the CUDA conversion");
+            let e = encodes_the_right_colours(e, wire);
+            // A failed CUDA conversion falls back to the CPU and still
+            // decodes right: the colours alone do not prove the kernel ran.
+            assert!(
+                e.gpu_convert(),
+                "{wire}: the CUDA conversion fell back to the CPU"
+            );
+        }
+    }
+
+    #[test]
+    fn nvenc_cpu_convert_encodes_the_right_colours() {
+        for wire in [Codec::H264, Codec::Hevc] {
+            let (w, h) = ((NV_COLS * BLOCK) as u32, (NV_ROWS * BLOCK) as u32);
+            let Some(mut e) = nvenc_codec(wire, w, h) else {
+                return;
+            };
+            e.cuda = None;
+            encodes_the_right_colours(e, wire);
+        }
+    }
+
+    /// A [`patch_grid`] (`NV_COLS` x `NV_ROWS`, `NV_PAD`) from system memory
+    /// through `e`, decoded again: every block within 4 levels of BT.709
+    /// limited range. Returns `e` so the caller can check which path ran.
+    fn encodes_the_right_colours(mut e: FfmpegEncoder, wire: Codec) -> FfmpegEncoder {
+        let codec = decoder(wire).unwrap_or_else(|| panic!("no {wire} decoder in this FFmpeg"));
+        for format in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888] {
+            let mut dec = ff::codec::context::Context::new_with_codec(codec)
+                .decoder()
+                .video()
+                .unwrap();
+            let (px, stride) = patch_grid(format, NV_COLS, NV_ROWS, NV_PAD);
+            let mut last = None;
+            for i in 0..3 {
+                for u in e
+                    .encode(&px, stride, format, i == 0, Instant::now())
+                    .unwrap()
+                {
+                    dec.send_packet(&ff::Packet::copy(&u.unit.annexb)).unwrap();
+                    let mut out = ff::frame::Video::empty();
+                    while dec.receive_frame(&mut out).is_ok() {
+                        last = Some(std::mem::replace(&mut out, ff::frame::Video::empty()));
+                    }
+                }
+            }
+            let out = last.expect("a decoded frame");
+            assert_grid_levels(&out, NV_COLS, NV_ROWS, &format!("{wire} {format:?}"));
+        }
+        e
     }
 
     /// `PATCHES` encoded and decoded again, from system memory or, `dmabuf`,

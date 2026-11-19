@@ -141,12 +141,17 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
     for b in [
         encoder::Backend::V4l2m2m,
         encoder::Backend::Vaapi,
+        encoder::Backend::Nvenc,
         encoder::Backend::X264,
         encoder::Backend::Openh264,
     ] {
         if b == encoder::Backend::V4l2m2m && !encoder::v4l2m2m_present() {
             // Only some ARM SoCs have one; its absence is not a fault (#409).
             println!("  {b:?}: not present (no V4L2 H.264 encoder device)");
+            continue;
+        }
+        if b == encoder::Backend::Nvenc && !encoder::nvenc_present() {
+            println!("  {b:?}: not present (no NVIDIA driver)");
             continue;
         }
         let s = encoder::EncoderSettings {
@@ -161,13 +166,24 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
             Err(e) => println!("  {b:?}: unavailable ({e:#})"),
         }
     }
-    println!("  (x264 and OpenH264 encode on the CPU; VA-API is opt-in: --encoder vaapi)");
+    println!(
+        "  (x264 and OpenH264 encode on the CPU; VA-API and NVENC are opt-in: \
+         --encoder vaapi, --encoder nvenc)"
+    );
     // 1080p: whether the GPU opens an HEVC encoder at all; a larger size is
     // probed again when a stream needs it.
-    if encoder::can_encode_hevc(1920, 1080) {
-        println!("  VA-API HEVC: ok (streamed when the receiver offers it)");
-    } else {
-        println!("  VA-API HEVC: unavailable (VA-API streams H.264)");
+    for b in [encoder::Backend::Vaapi, encoder::Backend::Nvenc] {
+        if b == encoder::Backend::Nvenc && !encoder::nvenc_present() {
+            continue;
+        }
+        if encoder::can_encode_hevc(b, 1920, 1080) {
+            println!(
+                "  {} HEVC: ok (streamed when the receiver offers it)",
+                b.label()
+            );
+        } else {
+            println!("  {} HEVC: unavailable (it streams H.264)", b.label());
+        }
     }
 
     let dir: PathBuf = lock::dir();
