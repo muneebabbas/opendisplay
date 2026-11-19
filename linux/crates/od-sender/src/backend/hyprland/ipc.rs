@@ -200,25 +200,40 @@ impl HyprlandIpc {
         // Hyprland applies monitor rules asynchronously; poll briefly. It
         // snaps a fractional scale to one that divides the mode into whole
         // logical pixels (Android's 2.625 at 1080x2424 becomes 2.6667), so
-        // accept a nearby scale once it has settled.
+        // accept a nearby scale once it has settled. The refresh can land a
+        // poll after the size and scale: wait for it too, so the logged mode
+        // is the one in force, but a size and scale that took are enough.
         let mut last: Option<f64> = None;
+        let mut settled: Option<Monitor> = None;
         for _ in 0..20 {
             if let Some(m) = self.monitor(name)? {
                 if m.width == width && m.height == height {
-                    if (m.scale - scale).abs() < 1e-6 {
-                        return Ok(m);
+                    let scale_ok = (m.scale - scale).abs() < 1e-6
+                        || (scale_snapped(scale, m.scale) && last == Some(m.scale));
+                    if scale_ok {
+                        if (m.scale - scale).abs() >= 1e-6 && settled.is_none() {
+                            warn!(
+                                "Hyprland adjusted the scale of {name} from {scale} to {}",
+                                m.scale
+                            );
+                        }
+                        if (m.refresh_rate - f64::from(hz)).abs() < 1.0 {
+                            return Ok(m);
+                        }
+                        settled = Some(m);
+                    } else {
+                        last = Some(m.scale);
                     }
-                    if scale_snapped(scale, m.scale) && last == Some(m.scale) {
-                        warn!(
-                            "Hyprland adjusted the scale of {name} from {scale} to {}",
-                            m.scale
-                        );
-                        return Ok(m);
-                    }
-                    last = Some(m.scale);
                 }
             }
             std::thread::sleep(Duration::from_millis(50));
+        }
+        if let Some(m) = settled {
+            warn!(
+                "{name} runs at {:.2} Hz, not the {hz} Hz asked for",
+                m.refresh_rate
+            );
+            return Ok(m);
         }
         bail!("output {name} did not take mode {width}x{height}@{hz} scale {scale}")
     }
