@@ -27,6 +27,7 @@ use crate::config::{self, Config, Layer};
 use crate::desktop::{self, Debounce, DesktopOptions, DesktopPlan, PlanError, StreamPlan};
 use crate::encoder::{self, ConvertStage, Encoded, Encoder, EncoderSettings, GpuFrameRefused};
 use crate::latest;
+use crate::pacer::Pacer;
 use crate::wayland::cursor::base64;
 use opendisplay_proto::video::Codec;
 
@@ -151,10 +152,10 @@ pub struct Target {
     pub gpu_capture: bool,
 }
 
-/// Plan the stream, HEVC when it is a candidate: the encoder is VA-API (the
-/// only HEVC backend), HEVC has not failed in this run, and the receiver
-/// offers it. HEVC is used only if its plan succeeds and
-/// `probe(width, height)` says the GPU opens an encoder at the planned
+/// Plan the stream, HEVC when it is a candidate: the encoder is VA-API or
+/// NVENC (the HEVC backends), HEVC has not failed in this run, and the
+/// receiver offers it. HEVC is used only if its plan succeeds and
+/// `probe(backend, width, height)` says the GPU opens an encoder at the planned
 /// stream size; otherwise the plan is H.264.
 fn choose_plan(
     hello: &Hello,
@@ -337,35 +338,22 @@ impl EncodePipeline {
             // inside the rate cap waits here for its slot rather than
             // being dropped: on a screen that then goes static it is the
             // last picture, and no further damage would ever replace it.
-            let mut pending: Option<Frame> = None;
-            // Encode starts are paced by a token bucket: a token accrues
-            // every 1/max_fps and each encode spends one. Holding a little
-            // over one token (BURST) lets a frame of steady content at the
-            // cap start the moment it arrives, wherever it falls against
-            // the encoder's clock, while the average still never exceeds
-            // the cap. A strict gap between starts instead makes the first
-            // frame's wait for its slot repeat on every frame after it.
-            //
-            // Tokens accrue 5% faster than the cap: content at exactly the
-            // cap (a 60 Hz desktop under a 60 fps cap) arrives with a little
-            // jitter, and a bucket refilled at exactly its rate drains on
-            // every early frame and never refills, so each frame waits again.
-            const BURST: f64 = 1.5;
-            const HEADROOM: f64 = 1.05;
-            let fps = f64::from(settings.max_fps.max(1.0)) * HEADROOM;
-            let mut tokens = BURST;
-            let mut refilled = Instant::now();
+            // With when it arrived, for the pacer.
+            let mut pending: Option<(Frame, Instant)> = None;
+            // Encode starts are held to the frame-rate cap by the pacer,
+            // which keeps the freshest frame rather than an old one that
+            // waited when content is faster than the cap (pacer.rs).
+            let mut pacer = Pacer::new(settings.max_fps, Instant::now());
             while !enc_stop.load(Ordering::Relaxed) {
                 let now = Instant::now();
-                tokens = (tokens + (now - refilled).as_secs_f64() * fps).min(BURST);
-                refilled = now;
-                let timeout = if pending.is_some() {
-                    Duration::from_secs_f64(((1.0 - tokens) / fps).max(0.0))
-                } else {
-                    Duration::from_millis(100)
+                let timeout = match &pending {
+                    Some((_, arrived)) => {
+                        pacer.wake_at(now, *arrived).saturating_duration_since(now)
+                    }
+                    None => Duration::from_millis(100),
                 };
                 match raw_rx.recv_timeout(timeout) {
-                    Ok(f) => pending = Some(f),
+                    Ok(f) => pending = Some((f, Instant::now())),
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(_) => break,
                 }
@@ -374,21 +362,22 @@ impl EncodePipeline {
                     last = None;
                     continue;
                 }
-                let frame = if pending.is_some() {
-                    let now = Instant::now();
-                    tokens = (tokens + (now - refilled).as_secs_f64() * fps).min(BURST);
-                    refilled = now;
-                    if tokens < 1.0 {
-                        continue;
+                if pending.is_none() && enc_force.load(Ordering::Relaxed) {
+                    // Static screen and an IDR was asked for: replay (§5.3),
+                    // under the cap like any frame.
+                    if let Some(f) = last.take() {
+                        pending = Some((f, Instant::now()));
                     }
-                    pending.take().unwrap()
-                } else if enc_force.load(Ordering::Relaxed) && last.is_some() {
-                    // Static screen and an IDR was asked for: replay (§5.3).
-                    last.take().unwrap()
-                } else {
+                }
+                if pending.is_none() {
                     continue;
-                };
-                tokens = (tokens - 1.0).max(0.0);
+                }
+                let now = Instant::now();
+                if !pacer.ready(now) {
+                    continue;
+                }
+                pacer.start(now);
+                let (frame, _) = pending.take().expect("checked above");
                 let (w, h) = frame.dimensions();
                 if encoder
                     .as_ref()

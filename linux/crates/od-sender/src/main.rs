@@ -10,6 +10,7 @@ mod dmabuf;
 mod doctor;
 mod encoder;
 mod latest;
+mod pacer;
 #[cfg(feature = "pipewire")]
 mod pipewire;
 mod session;
