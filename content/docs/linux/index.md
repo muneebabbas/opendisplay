@@ -26,6 +26,11 @@ Video is encoded on the CPU (x264) by default. Hardware encoding through
 VA-API (tested on Intel) is available as an opt-in, `--encoder vaapi`, when
 od-sender is built against an FFmpeg with VA-API, as the Arch package is; the
 release tarball does not have it yet.
+NVIDIA GPUs encode through NVENC, also opt-in: `--encoder nvenc` (tested on
+an RTX 3080), with the NVIDIA driver and an FFmpeg built with NVENC, as the
+Arch package is; the release tarball does not have it. It also streams HEVC
+when the receiver offers it, and converts colours on the GPU (a small CUDA
+kernel); capture stays in shared memory, copied to the GPU each frame.
 
 The other direction, a Linux machine as the display, is the
 [Linux receiver](/docs/linux/receiver/), also in beta.
@@ -74,7 +79,8 @@ use and about 60 ms of latency, against ~20 ms for a phone.
   ms end to end, against ~20 ms for an iPhone. `--encoder vaapi` moves the
   encode and the colour conversion to the GPU, which takes most of the load
   off the CPU, but it can add some latency at the GPU's power-saving clocks
-  and is not chosen automatically yet.
+  and is not chosen automatically yet. `--encoder nvenc` does the same on
+  NVIDIA GPUs.
 - **Sway, KDE Plasma and GNOME are untested on real desktops.**
 - **Android** is untested beyond a first session: touch, scroll, rotation,
   lock and quit are not checked yet.

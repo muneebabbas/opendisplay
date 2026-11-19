@@ -150,6 +150,10 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
             println!("  {b:?}: not present (no V4L2 H.264 encoder device)");
             continue;
         }
+        if b == encoder::Backend::Nvenc && !encoder::nvenc_present() {
+            println!("  {b:?}: not present (no NVIDIA driver)");
+            continue;
+        }
         let s = encoder::EncoderSettings {
             backend: b,
             codec: opendisplay_proto::video::Codec::H264,
@@ -169,6 +173,9 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
     // 1080p: whether the GPU opens an HEVC encoder at all; a larger size is
     // probed again when a stream needs it.
     for b in [encoder::Backend::Vaapi, encoder::Backend::Nvenc] {
+        if b == encoder::Backend::Nvenc && !encoder::nvenc_present() {
+            continue;
+        }
         if encoder::can_encode_hevc(b, 1920, 1080) {
             println!(
                 "  {} HEVC: ok (streamed when the receiver offers it)",

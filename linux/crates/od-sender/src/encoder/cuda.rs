@@ -115,6 +115,11 @@ fn cu() -> Result<&'static Cu> {
     .map_err(|e| anyhow!("{e}"))
 }
 
+/// Whether the NVIDIA driver's libcuda loads (resolving every symbol used).
+pub fn driver_present() -> bool {
+    cu().is_ok()
+}
+
 /// `Err` naming the call and CUDA's description of a failed `CUresult`.
 fn check(cu: &Cu, what: &str, r: CUresult) -> Result<()> {
     if r == 0 {

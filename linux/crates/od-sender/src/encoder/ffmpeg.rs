@@ -209,8 +209,10 @@ static INIT: Once = Once::new();
 /// Held while a GPU device or a hardware encoder opens. NVIDIA's VA-API
 /// driver calls `cuInit` from its library constructor, inside `dlopen`
 /// (holding the loader lock), while `cuInit` itself `dlopen`s: a VA-API
-/// device and a CUDA one opening at once in one process deadlock (seen as
-/// a hung `cargo test` on the desktop). Opening them one at a time cannot.
+/// device and a CUDA one opening at once in one process deadlock. The
+/// sender opens one encoder at a time, so in practice this is the parallel
+/// `cargo test` on an NVIDIA machine (it hung every run); opening them one
+/// at a time cannot deadlock.
 static GPU_OPEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn gpu_open_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -244,11 +246,9 @@ impl FfmpegEncoder {
         let format = pick_format(&codec, kind);
         let hw = match kind {
             Kind::Vaapi => Some(HwFrames::new(width, height)?),
-            // SPIKE: CUDA frames uploaded by the driver's DMA instead of
-            // NVENC copying system memory on the CPU.
-            Kind::Nvenc if std::env::var_os("OD_NVENC_SYSMEM").is_none() => {
-                Some(HwFrames::cuda(width, height)?)
-            }
+            // CUDA frames: converted on the GPU, or uploaded by the driver's
+            // DMA, instead of NVENC copying system memory on the CPU.
+            Kind::Nvenc => Some(HwFrames::cuda(width, height)?),
             _ => None,
         };
 
@@ -382,7 +382,6 @@ impl FfmpegEncoder {
             _ => (None, false),
         };
         let cuda = match (&hw, kind) {
-            (Some(_), Kind::Nvenc) if std::env::var_os("OD_NVENC_CPU_CONVERT").is_some() => None,
             (Some(hw), Kind::Nvenc) => {
                 // Under GPU_OPEN: loading the PTX may dlopen libcuda's JIT.
                 let opened = {

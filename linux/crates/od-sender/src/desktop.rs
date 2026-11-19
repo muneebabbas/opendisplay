@@ -89,7 +89,8 @@ pub struct OutputMode {
     /// Pixels, i.e. the capture raster.
     pub width: u32,
     pub height: u32,
-    /// Refresh rate: the receiver's panel rate.
+    /// Refresh rate: the stream's frame rate, so the compositor renders
+    /// only frames that are sent (the panel rate is the stream's ceiling).
     pub hz: u32,
     pub scale: f64,
 }

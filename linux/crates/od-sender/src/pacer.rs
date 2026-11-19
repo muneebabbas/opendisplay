@@ -149,8 +149,8 @@ impl Pacer {
     }
 }
 
-/// Development: the distribution of capture arrivals and encode starts,
-/// summarised every [`PaceLog::EVERY`] starts for a debug log. Gaps longer
+/// The distribution of capture arrivals and encode starts, summarised
+/// every [`PaceLog::EVERY`] starts (about 5 s at 60 fps) for the debug log. Gaps longer
 /// than four intervals (a screen that went static) are left out.
 pub struct PaceLog {
     interval: Duration,

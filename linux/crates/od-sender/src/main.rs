@@ -111,7 +111,7 @@ enum Cmd {
         /// number [default: passthrough, or the config file's].
         #[arg(long)]
         scale: Option<desktop::ScalePolicy>,
-        /// H.264 encoder backend (#360) [default: auto, or the config file's].
+        /// Encoder backend (#360) [default: auto, or the config file's].
         #[arg(long, value_enum)]
         encoder: Option<encoder::Backend>,
         /// Encoder threads (0 = all cores).

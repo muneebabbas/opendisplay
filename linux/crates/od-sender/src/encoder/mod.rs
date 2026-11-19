@@ -59,7 +59,8 @@ use crate::backend::{Frame, FrameBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
 pub enum Backend {
-    /// First that opens: v4l2m2m, x264, openh264. `vaapi` is opt-in.
+    /// First that opens: v4l2m2m, x264, openh264. `vaapi` and `nvenc` are
+    /// opt-in.
     Auto,
     V4l2m2m,
     Vaapi,
@@ -74,6 +75,12 @@ pub enum Backend {
 /// could not be asked.
 pub fn v4l2m2m_present() -> bool {
     v4l2::h264_encoder() != v4l2::Presence::Absent
+}
+
+/// `false` when the NVIDIA driver's `libcuda.so.1` does not load, so
+/// [`Backend::Nvenc`] cannot open: no NVIDIA GPU, not a fault.
+pub fn nvenc_present() -> bool {
+    cuda::driver_present()
 }
 
 impl Backend {

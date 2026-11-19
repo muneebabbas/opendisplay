@@ -355,9 +355,9 @@ impl EncodePipeline {
             // which keeps the freshest frame rather than an old one that
             // waited when content is faster than the cap (pacer.rs).
             let mut pacer = Pacer::new(settings.max_fps, Instant::now());
-            // Development: `RUST_LOG=od_sender::pace=debug`.
-            let mut pace_log = tracing::enabled!(target: "od_sender::pace", tracing::Level::DEBUG)
-                .then(|| PaceLog::new(settings.max_fps));
+            // At debug level: how evenly frames arrive and encodes start.
+            let mut pace_log =
+                tracing::enabled!(tracing::Level::DEBUG).then(|| PaceLog::new(settings.max_fps));
             while !enc_stop.load(Ordering::Relaxed) {
                 let now = Instant::now();
                 let timeout = match &pending {
@@ -406,7 +406,7 @@ impl EncodePipeline {
                     } else {
                         "at or below the cap"
                     };
-                    debug!(target: "od_sender::pace", "{line} | source {source}");
+                    debug!("{line} | source {source}");
                 }
                 let (frame, _) = pending.take().expect("checked above");
                 let (w, h) = frame.dimensions();
