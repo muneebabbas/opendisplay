@@ -383,13 +383,22 @@ impl FfmpegEncoder {
         };
         let cuda = match (&hw, kind) {
             (Some(_), Kind::Nvenc) if std::env::var_os("OD_NVENC_CPU_CONVERT").is_some() => None,
-            (Some(hw), Kind::Nvenc) => match CudaConvert::new(hw.device) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    warn!("NVENC: GPU colour conversion unavailable, converting on the CPU: {e:#}");
-                    None
+            (Some(hw), Kind::Nvenc) => {
+                // Under GPU_OPEN: loading the PTX may dlopen libcuda's JIT.
+                let opened = {
+                    let _open = gpu_open_lock();
+                    CudaConvert::new(hw.device)
+                };
+                match opened {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        warn!(
+                            "NVENC: GPU colour conversion unavailable, converting on the CPU: {e:#}"
+                        );
+                        None
+                    }
                 }
-            },
+            }
             _ => None,
         };
 
@@ -1264,60 +1273,135 @@ mod tests {
     }
 
     /// The NVENC encoder for `codec`, or `None` (test skipped) where this
-    /// machine has no NVIDIA encoder: no `*_nvenc` in this FFmpeg, or no
-    /// CUDA device or NVENC session (FFmpeg fails to open it).
+    /// machine has no NVIDIA encoder: no `h264_nvenc` in this FFmpeg, or no
+    /// CUDA device. Where both exist, failing to open it fails the test: on
+    /// the one machine these tests mean anything, a bad option or a pool
+    /// regression must not read as a skip.
     fn nvenc_codec(codec: Codec, w: u32, h: u32) -> Option<FfmpegEncoder> {
+        init();
+        if ff::encoder::find_by_name("h264_nvenc").is_none() {
+            eprintln!("skipped: no NVENC in this FFmpeg");
+            return None;
+        }
+        if let Err(e) = HwFrames::cuda(w, h) {
+            eprintln!("skipped: no CUDA device here ({e:#})");
+            return None;
+        }
         let s = EncoderSettings {
             codec,
             backend: Backend::Nvenc,
             ..SETTINGS
         };
-        match FfmpegEncoder::new(Kind::Nvenc, w, h, s) {
-            Ok(e) => Some(e),
-            Err(e) => {
-                eprintln!("skipped: no {codec} NVENC encoder here ({e:#})");
-                None
+        Some(
+            FfmpegEncoder::new(Kind::Nvenc, w, h, s)
+                .unwrap_or_else(|e| panic!("{codec} NVENC with a CUDA device: {e:#}")),
+        )
+    }
+
+    /// `rows` rows of `PATCHES` blocks, row `r` rotated by `r` patches, so
+    /// every block of a column differs from the one above it; `cols` blocks
+    /// wide (not a multiple of the patch count makes a width that is not a
+    /// multiple of 64 bytes per row in NV12), each pixel row `pad` bytes
+    /// longer than the picture, as a capture of a wider buffer.
+    fn patch_grid(format: PixelFormat, cols: usize, rows: usize, pad: usize) -> (Vec<u8>, u32) {
+        let stride = cols * BLOCK * 4 + pad;
+        let mut v = vec![0xa5u8; stride * BLOCK * rows];
+        for (y, line) in v.chunks_exact_mut(stride).enumerate() {
+            let r = y / BLOCK;
+            for c in 0..cols {
+                let [red, g, b] = PATCHES[(c + r) % PATCHES.len()];
+                let px = match format {
+                    PixelFormat::Xrgb8888 | PixelFormat::Argb8888 => [b, g, red, 0x7f],
+                    PixelFormat::Xbgr8888 | PixelFormat::Abgr8888 => [red, g, b, 0x7f],
+                };
+                for p in line[c * BLOCK * 4..(c + 1) * BLOCK * 4].chunks_exact_mut(4) {
+                    p.copy_from_slice(&px);
+                }
+            }
+        }
+        (v, stride as u32)
+    }
+
+    /// BT.709 limited-range [Y, Cb, Cr] of each of `PATCHES`.
+    const PATCH_LEVELS: [[u8; 3]; 6] = [
+        [63, 102, 240],
+        [173, 42, 26],
+        [32, 240, 118],
+        [235, 128, 128],
+        [16, 128, 128],
+        [126, 128, 128],
+    ];
+
+    /// Every block of a decoded [`patch_grid`] within 4 levels, sampled
+    /// off-centre (a quarter in) so a row or chroma-row offset shows.
+    fn assert_grid_levels(out: &ff::frame::Video, cols: usize, rows: usize, what: &str) {
+        for r in 0..rows {
+            for c in 0..cols {
+                let want = PATCH_LEVELS[(c + r) % PATCHES.len()];
+                let (x, y) = (c * BLOCK + BLOCK / 4, r * BLOCK + BLOCK / 4);
+                let got = [
+                    out.data(0)[y * out.stride(0) + x],
+                    out.data(1)[(y / 2) * out.stride(1) + x / 2],
+                    out.data(2)[(y / 2) * out.stride(2) + x / 2],
+                ];
+                assert!(
+                    got.iter()
+                        .zip(want)
+                        .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 4),
+                    "{what} block ({c}, {r}): decoded {got:?}, expected {want:?}"
+                );
             }
         }
     }
 
+    /// NVENC test pictures: 7 blocks wide (448 px, not a multiple of the
+    /// 6 patches nor of 64 bytes per NV12 row in a pitched pool), 3 rows,
+    /// captured with 96 bytes of padding per row.
+    const NV_COLS: usize = 7;
+    const NV_ROWS: usize = 3;
+    const NV_PAD: usize = 96;
+
     #[test]
     fn nvenc_gpu_encodes_the_right_colours() {
         for wire in [Codec::H264, Codec::Hevc] {
-            let rows = 3;
-            let (w, h) = ((PATCHES.len() * BLOCK) as u32, (rows * BLOCK) as u32);
+            let (w, h) = ((NV_COLS * BLOCK) as u32, (NV_ROWS * BLOCK) as u32);
             let Some(e) = nvenc_codec(wire, w, h) else {
                 return;
             };
             assert!(e.gpu_convert(), "NVENC opened without the CUDA conversion");
-            encodes_the_right_colours(e, wire, rows);
+            let e = encodes_the_right_colours(e, wire);
+            // A failed CUDA conversion falls back to the CPU and still
+            // decodes right: the colours alone do not prove the kernel ran.
+            assert!(
+                e.gpu_convert(),
+                "{wire}: the CUDA conversion fell back to the CPU"
+            );
         }
     }
 
     #[test]
     fn nvenc_cpu_convert_encodes_the_right_colours() {
         for wire in [Codec::H264, Codec::Hevc] {
-            let rows = 3;
-            let (w, h) = ((PATCHES.len() * BLOCK) as u32, (rows * BLOCK) as u32);
+            let (w, h) = ((NV_COLS * BLOCK) as u32, (NV_ROWS * BLOCK) as u32);
             let Some(mut e) = nvenc_codec(wire, w, h) else {
                 return;
             };
             e.cuda = None;
-            encodes_the_right_colours(e, wire, rows);
+            encodes_the_right_colours(e, wire);
         }
     }
 
-    /// `PATCHES` (`rows` rows of blocks) from system memory through `e`,
-    /// decoded again: each patch within 4 levels of BT.709 limited range.
-    fn encodes_the_right_colours(mut e: FfmpegEncoder, wire: Codec, rows: usize) {
-        let Some(codec) = decoder(wire) else { return };
+    /// A [`patch_grid`] (`NV_COLS` x `NV_ROWS`, `NV_PAD`) from system memory
+    /// through `e`, decoded again: every block within 4 levels of BT.709
+    /// limited range. Returns `e` so the caller can check which path ran.
+    fn encodes_the_right_colours(mut e: FfmpegEncoder, wire: Codec) -> FfmpegEncoder {
+        let codec = decoder(wire).unwrap_or_else(|| panic!("no {wire} decoder in this FFmpeg"));
         for format in [PixelFormat::Xrgb8888, PixelFormat::Xbgr8888] {
             let mut dec = ff::codec::context::Context::new_with_codec(codec)
                 .decoder()
                 .video()
                 .unwrap();
-            let (row, stride) = patches(format);
-            let px = row.repeat(rows);
+            let (px, stride) = patch_grid(format, NV_COLS, NV_ROWS, NV_PAD);
             let mut last = None;
             for i in 0..3 {
                 for u in e
@@ -1332,36 +1416,9 @@ mod tests {
                 }
             }
             let out = last.expect("a decoded frame");
-            assert_patch_levels(&out, &format!("{wire} {format:?}"));
+            assert_grid_levels(&out, NV_COLS, NV_ROWS, &format!("{wire} {format:?}"));
         }
-    }
-
-    /// The decoded `PATCHES` within 4 levels of BT.709 limited range.
-    fn assert_patch_levels(out: &ff::frame::Video, what: &str) {
-        for (i, want) in [
-            [63, 102, 240],
-            [173, 42, 26],
-            [32, 240, 118],
-            [235, 128, 128],
-            [16, 128, 128],
-            [126, 128, 128],
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let (x, y) = (i * BLOCK + BLOCK / 2, BLOCK / 2);
-            let got = [
-                out.data(0)[y * out.stride(0) + x],
-                out.data(1)[(y / 2) * out.stride(1) + x / 2],
-                out.data(2)[(y / 2) * out.stride(2) + x / 2],
-            ];
-            assert!(
-                got.iter()
-                    .zip(want)
-                    .all(|(g, w): (&u8, u8)| g.abs_diff(w) <= 4),
-                "{what} patch {i}: decoded {got:?}, expected {want:?}"
-            );
-        }
+        e
     }
 
     /// `PATCHES` encoded and decoded again, from system memory or, `dmabuf`,

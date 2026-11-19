@@ -147,6 +147,10 @@ const PTX: &str = concat!(include_str!("cuda/nv12.ptx"), "\0");
 /// Converts RGB frames in system memory into NV12 CUDA frames.
 pub struct CudaConvert {
     cu: &'static Cu,
+    /// Our own reference to the FFmpeg CUDA device that owns `ctx`, so the
+    /// context outlives the module and buffer we free in `Drop` whatever
+    /// order the encoder's fields drop in.
+    device: *mut ff::ffi::AVBufferRef,
     ctx: CUcontext,
     stream: CUstream,
     module: CUmodule,
@@ -189,12 +193,30 @@ impl CudaConvert {
             let hw = (*dc).hwctx as *const CudaDeviceContext;
             ((*hw).cuda_ctx, (*hw).stream)
         };
-        let _cur = Current::push(cu, ctx)?;
+        // SAFETY: `device` is a live buffer reference; a new reference to it.
+        let device = unsafe { ff::ffi::av_buffer_ref(device) };
+        if device.is_null() {
+            bail!("av_buffer_ref of the CUDA device failed");
+        }
+        let unref = |mut d: *mut ff::ffi::AVBufferRef| {
+            // SAFETY: the reference taken above, released once.
+            unsafe { ff::ffi::av_buffer_unref(&mut d) }
+        };
+        let _cur = match Current::push(cu, ctx) {
+            Ok(c) => c,
+            Err(e) => {
+                unref(device);
+                return Err(e);
+            }
+        };
         let mut module = std::ptr::null_mut();
         // SAFETY: NUL-terminated PTX; out-pointer valid.
-        check(cu, "cuModuleLoadData", unsafe {
+        if let Err(e) = check(cu, "cuModuleLoadData", unsafe {
             (cu.module_load_data)(&mut module, PTX.as_ptr().cast())
-        })?;
+        }) {
+            unref(device);
+            return Err(e);
+        }
         let mut kernel = std::ptr::null_mut();
         // SAFETY: `module` loaded above; NUL-terminated name.
         if let Err(e) = check(cu, "cuModuleGetFunction", unsafe {
@@ -202,10 +224,12 @@ impl CudaConvert {
         }) {
             // SAFETY: unloading the module we loaded.
             unsafe { (cu.module_unload)(module) };
+            unref(device);
             return Err(e);
         }
         Ok(Self {
             cu,
+            device,
             ctx,
             stream,
             module,
@@ -227,6 +251,11 @@ impl CudaConvert {
     ) -> Result<()> {
         let cu = self.cu;
         let (w, h) = (dst.width(), dst.height());
+        // The kernel converts 2x2 blocks: an odd size would read past the
+        // capture and write a luma row into the chroma plane.
+        if w % 2 != 0 || h % 2 != 0 {
+            bail!("CUDA conversion needs an even size, not {w}x{h}");
+        }
         let rows = pixels.len() / stride.max(1) as usize;
         if (stride as usize) < w as usize * 4 || rows < h as usize {
             bail!(
@@ -340,5 +369,7 @@ impl Drop for CudaConvert {
                 (self.cu.module_unload)(self.module);
             }
         }
+        // SAFETY: our reference from `new`, after the context's last use.
+        unsafe { ff::ffi::av_buffer_unref(&mut self.device) };
     }
 }
