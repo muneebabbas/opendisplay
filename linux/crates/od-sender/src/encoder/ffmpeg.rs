@@ -90,6 +90,7 @@ impl HwFrames {
             device: std::ptr::null_mut(),
             frames: std::ptr::null_mut(),
         };
+        let _open = gpu_open_lock();
         // SAFETY: out-pointers are valid; on failure FFmpeg leaves them null
         // and Drop unrefs only what was created. `av_hwframe_ctx_alloc`
         // returned non-null, so its `data` is an `AVHWFramesContext` we may
@@ -204,6 +205,17 @@ pub struct FfmpegEncoder {
 }
 
 static INIT: Once = Once::new();
+
+/// Held while a GPU device or a hardware encoder opens. NVIDIA's VA-API
+/// driver calls `cuInit` from its library constructor, inside `dlopen`
+/// (holding the loader lock), while `cuInit` itself `dlopen`s: a VA-API
+/// device and a CUDA one opening at once in one process deadlock (seen as
+/// a hung `cargo test` on the desktop). Opening them one at a time cannot.
+static GPU_OPEN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn gpu_open_lock() -> std::sync::MutexGuard<'static, ()> {
+    GPU_OPEN.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn init() {
     INIT.call_once(|| {
@@ -355,9 +367,11 @@ impl FfmpegEncoder {
                 }
             }
         }
-        let enc = v
-            .open_with(opts)
-            .with_context(|| format!("opening {name} at {width}x{height}"))?;
+        let enc = {
+            let _open = gpu_open_lock();
+            v.open_with(opts)
+        }
+        .with_context(|| format!("opening {name} at {width}x{height}"))?;
 
         let convert = Converter::new(width, height, format, band_count(height, s.threads))?;
 
