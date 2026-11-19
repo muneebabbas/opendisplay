@@ -10,6 +10,13 @@
 //! a 60 fps HEVC cap) sends the freshest frame rather than an old one that
 //! waited, and the last frame of a screen that goes static is still sent.
 //! The long-run rate never exceeds the cap.
+//!
+//! Starts are also at least [`MIN_GAP`] of an interval apart. The burst
+//! alone would let two starts happen one 120 Hz frame (8.3 ms) apart and the
+//! next one 25 ms later, with capture jitter deciding which frames go; with
+//! the gap, content faster than the cap is decimated evenly (every other
+//! frame of 120 Hz content), while content at the cap that arrives a little
+//! early or late still starts at once.
 
 use std::time::{Duration, Instant};
 
@@ -19,12 +26,16 @@ pub const BURST: f64 = 1.5;
 /// A frame whose token is at most this far off waits for it rather than
 /// for a fresher frame.
 pub const SLACK: Duration = Duration::from_millis(2);
+/// The shortest gap between encode starts, as a fraction of an interval.
+pub const MIN_GAP: f64 = 0.75;
 
 pub struct Pacer {
     fps: f64,
     interval: Duration,
+    min_gap: Duration,
     tokens: f64,
     refilled: Instant,
+    last_start: Option<Instant>,
 }
 
 impl Pacer {
@@ -33,8 +44,10 @@ impl Pacer {
         Self {
             fps,
             interval: Duration::from_secs_f64(1.0 / fps),
+            min_gap: Duration::from_secs_f64(MIN_GAP / fps),
             tokens: BURST,
             refilled: now,
+            last_start: None,
         }
     }
 
@@ -48,19 +61,25 @@ impl Pacer {
     pub fn ready(&mut self, now: Instant) -> bool {
         self.refill(now);
         // Float rounding must not leave a frame a hair short of its token.
-        self.tokens >= 1.0 - 1e-9
+        self.tokens >= 1.0 - 1e-9 && now >= self.gap_until(now)
+    }
+
+    /// The earliest the next start may be, by [`MIN_GAP`].
+    fn gap_until(&self, now: Instant) -> Instant {
+        self.last_start.map_or(now, |t| (t + self.min_gap).max(now))
     }
 
     /// An encode starts now.
     pub fn start(&mut self, now: Instant) {
         self.refill(now);
         self.tokens -= 1.0;
+        self.last_start = Some(now);
     }
 
     /// When to look again at a frame that arrived at `arrived` and is not
-    /// [`Self::ready`]: when its token comes if that is within [`SLACK`],
-    /// else one interval after it arrived (unless a newer frame replaces it
-    /// first), by when its token has come.
+    /// [`Self::ready`]: when its token and [`MIN_GAP`] allow it if that is
+    /// within [`SLACK`], else one interval after it arrived (unless a newer
+    /// frame replaces it first), by when both allow it.
     pub fn wake_at(&mut self, now: Instant, arrived: Instant) -> Instant {
         self.refill(now);
         // Rounded up to whole microseconds: a wake-up a few nanoseconds
@@ -68,12 +87,94 @@ impl Pacer {
         // once.
         let need_us = ((1.0 - self.tokens) / self.fps * 1e6).max(0.0).ceil() as u64;
         let need = Duration::from_micros(need_us);
-        let token_at = now + need;
-        if need <= SLACK {
-            token_at
+        let due = (now + need).max(self.gap_until(now));
+        if due.saturating_duration_since(now) <= SLACK {
+            due
         } else {
-            token_at.max(arrived + self.interval)
+            due.max(arrived + self.interval)
         }
+    }
+}
+
+/// Development: the distribution of capture arrivals and encode starts,
+/// summarised every [`PaceLog::EVERY`] starts for a debug log. Gaps longer
+/// than four intervals (a screen that went static) are left out.
+pub struct PaceLog {
+    interval: Duration,
+    last_arrival: Option<Instant>,
+    last_start: Option<Instant>,
+    arrivals: Vec<f64>,
+    starts: Vec<f64>,
+}
+
+impl PaceLog {
+    pub const EVERY: usize = 300;
+
+    pub fn new(max_fps: f32) -> Self {
+        Self {
+            interval: Duration::from_secs_f64(1.0 / f64::from(max_fps.max(1.0))),
+            last_arrival: None,
+            last_start: None,
+            arrivals: Vec::with_capacity(Self::EVERY * 3),
+            starts: Vec::with_capacity(Self::EVERY),
+        }
+    }
+
+    fn push(v: &mut Vec<f64>, last: &mut Option<Instant>, now: Instant, idle: Duration) {
+        if let Some(prev) = last.replace(now) {
+            let gap = now.saturating_duration_since(prev);
+            if gap <= idle {
+                v.push(gap.as_secs_f64() * 1e3);
+            }
+        }
+    }
+
+    pub fn arrived(&mut self, now: Instant) {
+        Self::push(
+            &mut self.arrivals,
+            &mut self.last_arrival,
+            now,
+            self.interval * 4,
+        );
+    }
+
+    /// An encode started; returns a summary every [`Self::EVERY`] starts.
+    pub fn started(&mut self, now: Instant) -> Option<String> {
+        Self::push(
+            &mut self.starts,
+            &mut self.last_start,
+            now,
+            self.interval * 4,
+        );
+        if self.starts.len() < Self::EVERY {
+            return None;
+        }
+        let iv = self.interval.as_secs_f64() * 1e3;
+        let summary = |v: &mut Vec<f64>| {
+            v.sort_by(f64::total_cmp);
+            let q = |x: f64| {
+                v.get(((v.len().max(1) - 1) as f64 * x).round() as usize)
+                    .copied()
+                    .unwrap_or(0.0)
+            };
+            format!(
+                "n {} p1 {:.1} p50 {:.1} p99 {:.1} ms",
+                v.len(),
+                q(0.01),
+                q(0.5),
+                q(0.99)
+            )
+        };
+        let short = self.starts.iter().filter(|g| **g < iv * 0.75).count();
+        let long = self.starts.iter().filter(|g| **g > iv * 1.25).count();
+        let line = format!(
+            "pace: starts {} ({short} under 3/4, {long} over 5/4 interval) | arrivals {}",
+            summary(&mut self.starts),
+            summary(&mut self.arrivals),
+        );
+        self.starts.clear();
+        self.arrivals.clear();
+        Some(line)
     }
 }
 
@@ -139,6 +240,101 @@ mod tests {
         let mut w: Vec<_> = starts.iter().map(|(a, s)| *s - *a).collect();
         w.sort();
         w
+    }
+
+    /// Start-to-start gaps, sorted.
+    fn gaps(starts: &[(Duration, Duration)]) -> Vec<Duration> {
+        let mut g: Vec<_> = starts.windows(2).map(|w| w[1].1 - w[0].1).collect();
+        g.sort();
+        g
+    }
+
+    fn pct(v: &[Duration], q: f64) -> Duration {
+        v[((v.len() - 1) as f64 * q).round() as usize]
+    }
+
+    /// Deterministic jitter in [-amp, amp] µs (an LCG on the frame index).
+    fn noise(amp: i64) -> impl Fn(u64) -> i64 {
+        move |i| {
+            let x = i
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407)
+                >> 33;
+            (x % (2 * amp as u64 + 1)) as i64 - amp
+        }
+    }
+
+    fn min_gap() -> Duration {
+        Duration::from_secs_f64(MIN_GAP / f64::from(CAP))
+    }
+
+    #[test]
+    fn starts_are_never_closer_than_the_min_gap() {
+        let cases: [(&str, Vec<Duration>); 5] = [
+            ("120 Hz", every(8_333, 10, |_| 0)),
+            ("120 Hz ±1 ms", every(8_333, 10, noise(1_000))),
+            ("90 Hz", every(11_111, 10, |_| 0)),
+            ("144 Hz", every(6_944, 10, noise(500))),
+            ("60 Hz ±3 ms", every(16_667, 10, noise(3_000))),
+        ];
+        for (what, arrivals) in cases {
+            let (starts, _) = run(&arrivals);
+            assert_capped(&starts);
+            let g = gaps(&starts);
+            // A start may land up to a microsecond early of the gap: wake-ups
+            // are rounded to whole microseconds.
+            assert!(
+                g[0] + Duration::from_micros(1) >= min_gap(),
+                "{what}: shortest gap {:?}",
+                g[0]
+            );
+            let fps = starts.len() as f64 / 10.0;
+            assert!((57.0..=60.5).contains(&fps), "{what}: {fps} fps");
+        }
+    }
+
+    #[test]
+    fn content_at_twice_the_cap_is_sent_evenly() {
+        // Every other frame: gaps stay one interval (16.7 ms), never 8.3
+        // then 25, with up to ±1 ms of capture jitter.
+        for (what, jitter) in [("steady", 0u64), ("±1 ms", 1_000)] {
+            let (starts, _) = run(&every(8_333, 10, noise(jitter as i64)));
+            let g = gaps(&starts);
+            let (p1, p99) = (pct(&g, 0.01), pct(&g, 0.99));
+            let lo = Duration::from_micros(16_667 - 2 * jitter - 500);
+            let hi = Duration::from_micros(16_667 + 2 * jitter + 500);
+            assert!(p1 >= lo && p99 <= hi, "{what}: gaps p1 {p1:?} p99 {p99:?}");
+        }
+        // More jitter than that shows through (which frame is nearest the
+        // slot is a coin toss), but gaps still never drop to one 120 Hz
+        // frame, and few run long. Without MIN_GAP: 87 of 600 outside
+        // [12.5, 20.8] ms; with it, 48.
+        let (starts, _) = run(&every(8_333, 10, noise(2_000)));
+        let g = gaps(&starts);
+        let long = g
+            .iter()
+            .filter(|x| **x > Duration::from_micros(20_800))
+            .count();
+        assert!(
+            long * 10 <= g.len(),
+            "±2 ms: {long} of {} gaps over 20.8 ms",
+            g.len()
+        );
+    }
+
+    #[test]
+    fn jittered_content_at_the_cap_keeps_its_frames_and_does_not_wait() {
+        let arrivals = every(16_667, 10, noise(3_000));
+        let (starts, _) = run(&arrivals);
+        assert!(
+            starts.len() * 100 >= arrivals.len() * 97,
+            "{} of {} sent",
+            starts.len(),
+            arrivals.len()
+        );
+        let w = waits(&starts);
+        assert_eq!(w[w.len() / 2], Duration::ZERO, "p50 wait");
+        assert!(pct(&w, 0.95) <= SLACK, "p95 wait {:?}", pct(&w, 0.95));
     }
 
     /// Starts in any one-second window never exceed the cap plus the burst.

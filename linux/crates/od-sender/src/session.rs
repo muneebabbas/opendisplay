@@ -27,7 +27,7 @@ use crate::config::{self, Config, Layer};
 use crate::desktop::{self, Debounce, DesktopOptions, DesktopPlan, PlanError, StreamPlan};
 use crate::encoder::{self, ConvertStage, Encoded, Encoder, EncoderSettings, GpuFrameRefused};
 use crate::latest;
-use crate::pacer::Pacer;
+use crate::pacer::{PaceLog, Pacer};
 use crate::wayland::cursor::base64;
 use opendisplay_proto::video::Codec;
 
@@ -344,6 +344,9 @@ impl EncodePipeline {
             // which keeps the freshest frame rather than an old one that
             // waited when content is faster than the cap (pacer.rs).
             let mut pacer = Pacer::new(settings.max_fps, Instant::now());
+            // Development: `RUST_LOG=od_sender::pace=debug`.
+            let mut pace_log = tracing::enabled!(target: "od_sender::pace", tracing::Level::DEBUG)
+                .then(|| PaceLog::new(settings.max_fps));
             while !enc_stop.load(Ordering::Relaxed) {
                 let now = Instant::now();
                 let timeout = match &pending {
@@ -353,7 +356,13 @@ impl EncodePipeline {
                     None => Duration::from_millis(100),
                 };
                 match raw_rx.recv_timeout(timeout) {
-                    Ok(f) => pending = Some((f, Instant::now())),
+                    Ok(f) => {
+                        let now = Instant::now();
+                        if let Some(l) = pace_log.as_mut() {
+                            l.arrived(now);
+                        }
+                        pending = Some((f, now));
+                    }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(_) => break,
                 }
@@ -377,6 +386,9 @@ impl EncodePipeline {
                     continue;
                 }
                 pacer.start(now);
+                if let Some(line) = pace_log.as_mut().and_then(|l| l.started(now)) {
+                    debug!(target: "od_sender::pace", "{line}");
+                }
                 let (frame, _) = pending.take().expect("checked above");
                 let (w, h) = frame.dimensions();
                 if encoder
