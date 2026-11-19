@@ -38,6 +38,7 @@ pub enum Kind {
     X264,
     V4l2m2m,
     Vaapi,
+    Nvenc,
 }
 
 /// The VA-API device and the surface pool the encoder draws from. Owns one
@@ -183,6 +184,8 @@ impl FfmpegEncoder {
             (Kind::V4l2m2m, Codec::H264) => "h264_v4l2m2m",
             (Kind::Vaapi, Codec::H264) => "h264_vaapi",
             (Kind::Vaapi, Codec::Hevc) => "hevc_vaapi",
+            (Kind::Nvenc, Codec::H264) => "h264_nvenc",
+            (Kind::Nvenc, Codec::Hevc) => "hevc_nvenc",
             (_, Codec::Hevc) => bail!("{kind:?} does not encode HEVC"),
         };
         let codec = ff::encoder::find_by_name(name)
@@ -277,6 +280,26 @@ impl FfmpegEncoder {
                     // 8-bit 4:2:0: what the receivers decode into NV12.
                     opts.set("profile", "main");
                 }
+            }
+            Kind::Nvenc => {
+                // Constant-quality VBR under the same cap and quarter-second
+                // buffer as the others; the fastest preset tuned for
+                // ultra-low latency, no lookahead, one frame in flight.
+                v.set_bit_rate(s.bitrate_bps as usize);
+                v.set_max_bit_rate(s.bitrate_bps as usize);
+                // SAFETY: plain field write on a context we own and have not opened.
+                unsafe { (*v.as_mut_ptr()).rc_buffer_size = (s.bitrate_bps / 4) as i32 };
+                v.set_gop(i32::MAX as u32);
+                opts.set("preset", "p1");
+                opts.set("tune", "ull");
+                opts.set("rc", "vbr");
+                opts.set("cq", "23");
+                opts.set("zerolatency", "1");
+                opts.set("delay", "0");
+                opts.set("forced-idr", "1");
+                opts.set("rc-lookahead", "0");
+                opts.set("no-scenecut", "1");
+                opts.set("profile", "main");
             }
         }
         let enc = v
@@ -593,6 +616,7 @@ fn pick_format(codec: &ff::Codec, kind: Kind) -> Pixel {
         Kind::X264 => &[Pixel::YUV420P, Pixel::NV12],
         Kind::V4l2m2m => &[Pixel::NV12, Pixel::YUV420P],
         Kind::Vaapi => return Pixel::NV12,
+        Kind::Nvenc => &[Pixel::NV12, Pixel::YUV420P],
     };
     let listed: Vec<Pixel> = codec
         .video()
@@ -914,6 +938,7 @@ mod tests {
             threads: 1,
         };
         for kind in [Kind::X264, Kind::V4l2m2m] {
+            // NVENC does encode HEVC.
             let e = FfmpegEncoder::new(kind, 320, 240, s).err().unwrap();
             assert!(format!("{e:#}").contains("does not encode HEVC"), "{e:#}");
         }

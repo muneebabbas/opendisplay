@@ -10,7 +10,7 @@
 //! scale = "passthrough"       # or "mac", or a number
 //! bitrate-mbps = 20
 //! max-fps = 60
-//! encoder = "auto"            # auto | v4l2m2m | vaapi | x264 | openh264
+//! encoder = "auto"            # auto | v4l2m2m | vaapi | nvenc | x264 | openh264
 //! cursor = "auto"            # auto | video | off; true = auto, false = off
 //! capture = "auto"           # auto | ext | wlr (auto: wlr on Hyprland < 0.57)
 //! tailscale = true           # false: never probe Tailscale peers (#409)
@@ -324,7 +324,7 @@ mod tests {
             "scale = \"huge\"",
             "scale = -1",
             "bitrate-mbps = 0",
-            "encoder = \"nvenc\"",
+            "encoder = \"quicksync\"",
             "cursor = \"sometimes\"",
             "[receiver.x]\nmax-fps = 30", // not overridable per receiver
         ] {

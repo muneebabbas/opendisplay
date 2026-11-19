@@ -141,6 +141,7 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
     for b in [
         encoder::Backend::V4l2m2m,
         encoder::Backend::Vaapi,
+        encoder::Backend::Nvenc,
         encoder::Backend::X264,
         encoder::Backend::Openh264,
     ] {
@@ -164,10 +165,12 @@ pub fn doctor(req: &Request, config_path: Option<&Path>) -> bool {
     println!("  (x264 and OpenH264 encode on the CPU; VA-API is opt-in: --encoder vaapi)");
     // 1080p: whether the GPU opens an HEVC encoder at all; a larger size is
     // probed again when a stream needs it.
-    if encoder::can_encode_hevc(1920, 1080) {
-        println!("  VA-API HEVC: ok (streamed when the receiver offers it)");
-    } else {
-        println!("  VA-API HEVC: unavailable (VA-API streams H.264)");
+    for b in [encoder::Backend::Vaapi, encoder::Backend::Nvenc] {
+        if encoder::can_encode_hevc(b, 1920, 1080) {
+            println!("  {b:?} HEVC: ok (streamed when the receiver offers it)");
+        } else {
+            println!("  {b:?} HEVC: unavailable ({b:?} streams H.264)");
+        }
     }
 
     let dir: PathBuf = lock::dir();

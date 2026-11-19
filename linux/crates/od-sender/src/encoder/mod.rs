@@ -51,12 +51,14 @@ use tracing::{debug, info};
 
 use crate::backend::{Frame, FrameBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
 pub enum Backend {
     /// First that opens: v4l2m2m, x264, openh264. `vaapi` is opt-in.
     Auto,
     V4l2m2m,
     Vaapi,
+    /// NVIDIA hardware encode (NVENC, through FFmpeg's `*_nvenc`).
+    Nvenc,
     X264,
     Openh264,
 }
@@ -69,28 +71,38 @@ pub fn v4l2m2m_present() -> bool {
 }
 
 impl Backend {
+    /// Whether this backend can encode HEVC at all.
+    pub fn encodes_hevc(self) -> bool {
+        matches!(self, Backend::Vaapi | Backend::Nvenc)
+    }
+
     fn label(self) -> &'static str {
         match self {
             Backend::Auto => "auto",
             Backend::V4l2m2m => "V4L2 M2M (hardware)",
             Backend::Vaapi => "VA-API (hardware)",
+            Backend::Nvenc => "NVENC (hardware)",
             Backend::X264 => "x264",
             Backend::Openh264 => "OpenH264",
         }
     }
 }
 
-/// Whether a VA-API HEVC encoder opens at this size. Opens a throwaway one
-/// through the same constructor the stream uses, once per size per process;
-/// logs once per size when it does not.
-pub fn can_encode_hevc(width: u32, height: u32) -> bool {
+/// Whether `backend`'s HEVC encoder opens at this size. Opens a throwaway
+/// one through the same constructor the stream uses, once per backend and
+/// size per process; logs once when it does not.
+pub fn can_encode_hevc(backend: Backend, width: u32, height: u32) -> bool {
+    if !backend.encodes_hevc() {
+        return false;
+    }
     let (width, height) = (width & !1, height & !1);
-    static CACHE: OnceLock<Mutex<HashMap<(u32, u32), bool>>> = OnceLock::new();
+    type Probed = HashMap<(Backend, u32, u32), bool>;
+    static CACHE: OnceLock<Mutex<Probed>> = OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     if let Some(&ok) = cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(&(width, height))
+        .get(&(backend, width, height))
     {
         return ok;
     }
@@ -99,7 +111,7 @@ pub fn can_encode_hevc(width: u32, height: u32) -> bool {
         width,
         height,
         EncoderSettings {
-            backend: Backend::Vaapi,
+            backend,
             codec: Codec::Hevc,
             bitrate_bps: 2_000_000,
             max_fps: 60.0,
@@ -116,7 +128,7 @@ pub fn can_encode_hevc(width: u32, height: u32) -> bool {
     cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert((width, height), ok);
+        .insert((backend, width, height), ok);
     ok
 }
 
@@ -170,9 +182,9 @@ impl Encoder {
     /// row/column.
     pub fn new(width: u32, height: u32, s: EncoderSettings) -> Result<Self> {
         let (width, height) = (width & !1, height & !1);
-        if s.codec == Codec::Hevc && s.backend != Backend::Vaapi {
+        if s.codec == Codec::Hevc && !s.backend.encodes_hevc() {
             bail!(
-                "HEVC is only encoded by the VA-API backend, not {}",
+                "HEVC is only encoded by the VA-API and NVENC backends, not {}",
                 s.backend.label()
             );
         }
@@ -180,6 +192,7 @@ impl Encoder {
             Backend::Auto => &[Backend::V4l2m2m, Backend::X264, Backend::Openh264],
             Backend::V4l2m2m => &[Backend::V4l2m2m],
             Backend::Vaapi => &[Backend::Vaapi],
+            Backend::Nvenc => &[Backend::Nvenc],
             Backend::X264 => &[Backend::X264],
             Backend::Openh264 => &[Backend::Openh264],
         };
@@ -198,6 +211,8 @@ impl Encoder {
                         .map(|e| Imp::Ffmpeg(Box::new(e)))
                 }
                 Backend::Vaapi => ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::Vaapi, width, height, s)
+                    .map(|e| Imp::Ffmpeg(Box::new(e))),
+                Backend::Nvenc => ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::Nvenc, width, height, s)
                     .map(|e| Imp::Ffmpeg(Box::new(e))),
                 Backend::X264 => ffmpeg::FfmpegEncoder::new(ffmpeg::Kind::X264, width, height, s)
                     .map(|e| Imp::Ffmpeg(Box::new(e))),
@@ -255,6 +270,7 @@ impl Encoder {
             (Imp::Ffmpeg(_), Backend::Vaapi, Codec::Hevc) => {
                 "VA-API (hardware) HEVC, CPU colour conversion"
             }
+            (Imp::Ffmpeg(_), Backend::Nvenc, Codec::Hevc) => "NVENC (hardware) HEVC",
             _ => self.backend.label(),
         }
     }
@@ -286,7 +302,7 @@ impl Encoder {
     /// ahead of the encoder.
     pub fn stage_min_width(&self) -> u32 {
         match self.backend {
-            Backend::Vaapi => 0,
+            Backend::Vaapi | Backend::Nvenc => 0,
             _ => MIN_STAGE_WIDTH,
         }
     }
@@ -350,7 +366,7 @@ mod tests {
             };
             let e = Encoder::new(320, 240, s).err().expect("must refuse HEVC");
             assert!(
-                format!("{e:#}").contains("HEVC is only encoded by the VA-API backend"),
+                format!("{e:#}").contains("HEVC is only encoded by the VA-API and NVENC backends"),
                 "{backend:?}: {e:#}"
             );
         }
