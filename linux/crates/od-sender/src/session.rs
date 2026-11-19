@@ -306,6 +306,8 @@ struct EncodePipeline {
     gpu_failed_rx: mpsc::UnboundedReceiver<String>,
     /// The encoder thread, joined on drop (bounded by [`ENCODE_JOIN`]).
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Wakes the encoder thread out of waiting for a frame, on drop.
+    raw_close: latest::Closer<Frame>,
 }
 
 /// How long dropping a pipeline waits for its encoder thread to close the
@@ -324,6 +326,7 @@ impl EncodePipeline {
         let stop = Arc::new(AtomicBool::new(false));
         let force_idr = Arc::new(AtomicBool::new(true));
         let (raw_tx, raw_rx) = latest::channel::<Frame>();
+        let raw_close = raw_rx.closer();
         let (encoded_tx, encoded_rx) = mpsc::channel::<Encoded>(4);
         let (lost_tx, lost_rx) = mpsc::unbounded_channel();
         let (codec_failed_tx, codec_failed_rx) = mpsc::unbounded_channel::<String>();
@@ -365,11 +368,14 @@ impl EncodePipeline {
                 };
                 match raw_rx.recv_timeout(timeout) {
                     Ok(f) => {
-                        let now = Instant::now();
+                        // When it was captured, not received: the convert
+                        // stage and a busy encoder delay the receipt.
+                        let at = f.captured_at;
+                        pacer.arrived(at);
                         if let Some(l) = pace_log.as_mut() {
-                            l.arrived(now);
+                            l.arrived(at);
                         }
-                        pending = Some((f, now));
+                        pending = Some((f, at));
                     }
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     Err(_) => break,
@@ -395,7 +401,12 @@ impl EncodePipeline {
                 }
                 pacer.start(now);
                 if let Some(line) = pace_log.as_mut().and_then(|l| l.started(now)) {
-                    debug!(target: "od_sender::pace", "{line}");
+                    let source = if pacer.faster_than_cap() {
+                        "faster than the cap"
+                    } else {
+                        "at or below the cap"
+                    };
+                    debug!(target: "od_sender::pace", "{line} | source {source}");
                 }
                 let (frame, _) = pending.take().expect("checked above");
                 let (w, h) = frame.dimensions();
@@ -511,6 +522,7 @@ impl EncodePipeline {
             gpu_frames,
             gpu_failed_rx,
             thread: Some(thread),
+            raw_close,
         })
     }
 
@@ -539,11 +551,15 @@ impl EncodePipeline {
 impl Drop for EncodePipeline {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // Wake the thread wherever it waits: for a frame, or to hand one
+        // over on a full `encoded` channel (nobody drains it any more). It
+        // then finishes the encode in flight, if any, and drops (closes) the
+        // encoder.
+        self.raw_close.close();
+        self.encoded_rx.close();
         let Some(thread) = self.thread.take() else {
             return;
         };
-        // The thread looks at `stop` at least every 100 ms, after the encode
-        // in flight; then it drops (closes) the encoder.
         let deadline = Instant::now() + ENCODE_JOIN;
         while !thread.is_finished() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));

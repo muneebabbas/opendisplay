@@ -205,6 +205,7 @@ impl HyprlandIpc {
         // is the one in force, but a size and scale that took are enough.
         let mut last: Option<f64> = None;
         let mut settled: Option<Monitor> = None;
+        let mut settled_polls = 0;
         for _ in 0..20 {
             if let Some(m) = self.monitor(name)? {
                 if m.width == width && m.height == height {
@@ -219,6 +220,12 @@ impl HyprlandIpc {
                         }
                         if (m.refresh_rate - f64::from(hz)).abs() < 1.0 {
                             return Ok(m);
+                        }
+                        // A refresh Hyprland will not take must not hold up
+                        // every (re)configure for the whole poll.
+                        settled_polls += 1;
+                        if settled_polls > 4 {
+                            break;
                         }
                         settled = Some(m);
                     } else {

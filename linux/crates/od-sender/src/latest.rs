@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 struct State<T> {
     value: Option<T>,
     sender_alive: bool,
+    /// Closed by the receiving side's owner ([`Closer`]): the receiver
+    /// returns `Disconnected` at once, even with a value waiting.
+    closed: bool,
 }
 
 struct Shared<T> {
@@ -22,11 +25,25 @@ pub struct Sender<T>(Arc<Shared<T>>);
 
 pub struct Receiver<T>(Arc<Shared<T>>);
 
+/// Wakes the receiver for good from another thread: its pending and later
+/// `recv_timeout` calls return `Disconnected`.
+pub struct Closer<T>(Arc<Shared<T>>);
+
+impl<T> Closer<T> {
+    pub fn close(&self) {
+        let mut s = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.closed = true;
+        drop(s);
+        self.0.ready.notify_all();
+    }
+}
+
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
             value: None,
             sender_alive: true,
+            closed: false,
         }),
         ready: Condvar::new(),
     });
@@ -55,12 +72,20 @@ impl<T> Drop for Sender<T> {
 }
 
 impl<T> Receiver<T> {
+    pub fn closer(&self) -> Closer<T> {
+        Closer(self.0.clone())
+    }
+
     /// Like [`std::sync::mpsc::Receiver::recv_timeout`]: a value stored
-    /// before the sender went away is still delivered.
+    /// before the sender went away is still delivered (not after a
+    /// [`Closer::close`]).
     pub fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvTimeoutError> {
         let deadline = Instant::now() + timeout;
         let mut s = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
         loop {
+            if s.closed {
+                return Err(RecvTimeoutError::Disconnected);
+            }
             if let Some(v) = s.value.take() {
                 return Ok(v);
             }
@@ -96,6 +121,22 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(5)),
             Err(RecvTimeoutError::Timeout)
         );
+    }
+
+    #[test]
+    fn close_wakes_a_waiting_receiver_at_once() {
+        let (tx, rx) = channel::<u32>();
+        let closer = rx.closer();
+        let t = std::thread::spawn(move || {
+            let t0 = Instant::now();
+            (rx.recv_timeout(Duration::from_secs(10)), t0.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        closer.close();
+        let (r, waited) = t.join().unwrap();
+        assert_eq!(r, Err(RecvTimeoutError::Disconnected));
+        assert!(waited < Duration::from_secs(5), "waited {waited:?}");
+        drop(tx);
     }
 
     #[test]
