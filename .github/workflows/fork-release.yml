@@ -6,8 +6,10 @@ name: Fork release
 # runs upstream. See FORK.md.
 #
 # Unlike upstream, the x86_64 build links FFmpeg's VA-API encoders
-# (h264_vaapi, hevc_vaapi), so it needs libva/libdrm at runtime. Pull requests
-# touching the build build and smoke-test without releasing.
+# (h264_vaapi, hevc_vaapi), so it needs libva/libdrm at runtime, and NVENC
+# (h264_nvenc, hevc_nvenc, CUDA hwcontext), which FFmpeg dlopens from the
+# NVIDIA driver and so adds no shared library. Pull requests touching the
+# build build and smoke-test without releasing.
 #
 # The build steps mirror the `build` job of linux-release.yml, kept separate
 # so the fork changes no upstream file. When syncing upstream, compare that
@@ -82,10 +84,12 @@ jobs:
             arch: x86_64
             glibc_floor: "2.38"
             vaapi: "1"
+            nvenc: "1"
           - runner: ubuntu-24.04-arm
             arch: aarch64
             glibc_floor: "2.39"
             vaapi: "0"
+            nvenc: "0"
     name: od-sender (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
@@ -99,6 +103,9 @@ jobs:
       FFMPEG_DIR: /home/runner/static-ffmpeg
       # build-static.sh: adds h264_vaapi and hevc_vaapi, linking libva/libdrm.
       FFMPEG_VAAPI: ${{ matrix.vaapi }}
+      # build-static.sh: adds h264_nvenc, hevc_nvenc and the CUDA hwcontext
+      # (nv-codec-headers only; the driver is dlopened at run time).
+      FFMPEG_NVENC: ${{ matrix.nvenc }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -115,13 +122,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Without VA-API the key is linux-release.yml's, so that cache is shared.
+      # Without VA-API and NVENC the key is linux-release.yml's, so that cache
+      # is shared.
       - name: Cache static FFmpeg
         id: ffmpeg-cache
         uses: actions/cache@v4
         with:
           path: ${{ env.FFMPEG_DIR }}
-          key: static-ffmpeg-${{ matrix.arch }}${{ matrix.vaapi == '1' && '-vaapi' || '' }}-${{ hashFiles('linux/packaging/ffmpeg/build-static.sh') }}
+          key: static-ffmpeg-${{ matrix.arch }}${{ matrix.vaapi == '1' && '-vaapi' || '' }}${{ matrix.nvenc == '1' && '-nvenc' || '' }}-${{ hashFiles('linux/packaging/ffmpeg/build-static.sh') }}
 
       - name: Build static FFmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
@@ -147,6 +155,8 @@ jobs:
             readelf -d "$bin" | grep -q 'NEEDED.*\[libva\.so\.2\]' || {
               echo "::error::VA-API build does not link libva.so.2"; exit 1; }
           fi
+          # NVENC adds nothing here: libcuda and libnvidia-encode are dlopened,
+          # so the allowlist above rejects them if they ever get linked.
           bad="$(readelf -d "$bin" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p' | grep -Ev "$allowed" || true)"
           if [ -n "$bad" ]; then
             echo "::error::unexpected shared libraries: $bad"
@@ -171,6 +181,14 @@ jobs:
             if grep -q 'this FFmpeg build has no' <<<"$out"; then
               echo "::error::FFmpeg is missing a VA-API encoder"; exit 1
             fi
+          fi
+          # Without the NVIDIA driver doctor reports NVENC "not present"
+          # before asking FFmpeg, so look for the encoders' own names and
+          # FFmpeg's dlopen loader in the (stripped) binary instead.
+          if [ "$FFMPEG_NVENC" = 1 ]; then
+            for s in 'NVIDIA NVENC H.264 encoder' 'NVIDIA NVENC hevc encoder' 'libnvidia-encode.so.1'; do
+              grep -aqF "$s" "$bin" || { echo "::error::NVENC build lacks '$s'"; exit 1; }
+            done
           fi
 
       # Same names and layout as upstream's release, so the Omarchy plugin

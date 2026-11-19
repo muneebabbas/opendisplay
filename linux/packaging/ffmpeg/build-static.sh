@@ -13,6 +13,10 @@
 # no muxers or protocols). Autodetection is off so no system library sneaks
 # into the link. FFMPEG_VAAPI=1 adds h264_vaapi and hevc_vaapi, which link
 # libva/libdrm dynamically (the x86 VA-API encoder, --encoder vaapi).
+# FFMPEG_NVENC=1 adds h264_nvenc, hevc_nvenc and the CUDA hwcontext, built
+# against nv-codec-headers (header-only): FFmpeg dlopens libcuda and
+# libnvidia-encode at run time, so the binary gains no shared library and runs
+# unchanged on machines without the NVIDIA driver (--encoder nvenc).
 #
 # Inputs are pinned by commit and the CI cache is keyed on this file's hash,
 # so bumping a version below rebuilds everywhere.
@@ -21,6 +25,9 @@ set -euo pipefail
 FFMPEG_TAG=n9.0.2
 FFMPEG_COMMIT=946fcce07b6dcd0331c8cc609192aeff5e1924f8
 X264_COMMIT=b35605ace3ddf7c1a5d67a2eb553f034aef41d55  # stable, r3222 (libx264 165)
+# SDK 12.1: the oldest FFmpeg 9 accepts, so NVENC works from driver 530 on.
+NVCODEC_TAG=n12.1.14.0
+NVCODEC_COMMIT=1889e62e2d35ff7aa9baca2bceb14f053785e6f1
 
 prefix="$(realpath -m "${1:?usage: $0 <install prefix>}")"
 work="${prefix}.build"
@@ -39,6 +46,11 @@ fetch() {  # fetch <url> <commit> <dir> [ref]
 
 fetch https://code.videolan.org/videolan/x264.git "${X264_COMMIT}" "${work}/x264"
 fetch https://github.com/FFmpeg/FFmpeg.git "${FFMPEG_COMMIT}" "${work}/ffmpeg" "refs/tags/${FFMPEG_TAG}"
+if [ "${FFMPEG_NVENC:-0}" = 1 ]; then
+  fetch https://github.com/FFmpeg/nv-codec-headers.git "${NVCODEC_COMMIT}" "${work}/nv-codec-headers" "refs/tags/${NVCODEC_TAG}"
+  # Installs only headers and ffnvcodec.pc into the prefix.
+  make -C "${work}/nv-codec-headers" PREFIX="${prefix}" install
+fi
 
 (
   cd "${work}/x264"
@@ -54,6 +66,12 @@ extra=()
 if [ "${FFMPEG_VAAPI:-0}" = 1 ]; then
   encoders="${encoders},h264_vaapi,hevc_vaapi"
   extra+=(--enable-vaapi --enable-libdrm)
+fi
+if [ "${FFMPEG_NVENC:-0}" = 1 ]; then
+  # Autodetection is off, so each piece is named: ffnvcodec (the dlopen
+  # loaders), cuda (the hwcontext od-sender uploads frames into) and nvenc.
+  encoders="${encoders},h264_nvenc,hevc_nvenc"
+  extra+=(--enable-ffnvcodec --enable-cuda --enable-nvenc)
 fi
 
 (
@@ -95,6 +113,11 @@ fi
 # THIRD-PARTY-LICENSES.txt is built from them.
 install -Dm644 "${work}/x264/COPYING" "${prefix}/share/licenses/x264/COPYING"
 install -Dm644 "${work}/ffmpeg/LICENSE.md" "${prefix}/share/licenses/ffmpeg/LICENSE.md"
+if [ "${FFMPEG_NVENC:-0}" = 1 ]; then
+  # nv-codec-headers' licence sits at the top of each header.
+  sed -n '1,/\*\//p' "${work}/nv-codec-headers/include/ffnvcodec/nvEncodeAPI.h" \
+    | install -Dm644 /dev/stdin "${prefix}/share/licenses/nv-codec-headers/LICENSE"
+fi
 for f in COPYING.GPLv2 COPYING.GPLv3 COPYING.LGPLv2.1 COPYING.LGPLv3; do
   if [ -f "${work}/ffmpeg/${f}" ]; then
     install -Dm644 "${work}/ffmpeg/${f}" "${prefix}/share/licenses/ffmpeg/${f}"

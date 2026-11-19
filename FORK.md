@@ -39,8 +39,15 @@ The x86_64 build differs from upstream on purpose: FFmpeg is built with
 `FFMPEG_VAAPI=1`, so `h264_vaapi` and `hevc_vaapi` are linked in and the binary
 needs `libva.so.2`, `libva-drm.so.2` and `libdrm.so.2` at runtime. VA-API is
 still opt-in at runtime: `encoder = "vaapi"` in `sender.toml` (or
-`--encoder vaapi`). Pull requests touching the workflow or the FFmpeg script
-build and smoke-test without releasing.
+`--encoder vaapi`). It is also built with `FFMPEG_NVENC=1`: `h264_nvenc`,
+`hevc_nvenc` and FFmpeg's CUDA hwcontext, compiled against nv-codec-headers
+(SDK 12.1, NVIDIA driver 530 or newer). FFmpeg and od-sender dlopen
+`libcuda.so.1` and `libnvidia-encode.so.1` from the driver, so this adds no
+runtime dependency and machines without NVIDIA are unaffected (doctor: "not
+present"). Opt-in like VA-API: `encoder = "nvenc"` or `--encoder nvenc`. The
+upstream docs (`linux/README.md`) still describe upstream's tarball, which has
+neither. Pull requests touching the workflow or the FFmpeg script build and
+smoke-test without releasing.
 
 Its `sender` job copies the `build` job of `linux-release.yml`. After syncing
 upstream, check that job for changes (FFmpeg build, symbol floors, packaging)
