@@ -161,12 +161,12 @@ fn choose_plan(
     desktop: &DesktopOptions,
     backend: encoder::Backend,
     hevc_failed: bool,
-    probe: impl FnOnce(u32, u32) -> bool,
+    probe: impl FnOnce(encoder::Backend, u32, u32) -> bool,
 ) -> Result<DesktopPlan, PlanError> {
     let offered = desktop::preferred_codec(hello) == Codec::Hevc;
-    if backend == encoder::Backend::Vaapi && !hevc_failed && offered {
+    if backend.encodes_hevc() && !hevc_failed && offered {
         if let Ok(plan) = desktop::plan(hello, desktop, Codec::Hevc) {
-            if probe(plan.stream.width, plan.stream.height) {
+            if probe(backend, plan.stream.width, plan.stream.height) {
                 return Ok(plan);
             }
         }
@@ -338,13 +338,29 @@ impl EncodePipeline {
             // being dropped: on a screen that then goes static it is the
             // last picture, and no further damage would ever replace it.
             let mut pending: Option<Frame> = None;
-            let min_interval = Duration::from_secs_f32(1.0 / settings.max_fps.max(1.0));
-            // The cap is measured between encode starts, so encode time
-            // counts towards the interval instead of adding to it.
-            let mut last_start = Instant::now() - min_interval;
+            // Encode starts are paced by a token bucket: a token accrues
+            // every 1/max_fps and each encode spends one. Holding a little
+            // over one token (BURST) lets a frame of steady content at the
+            // cap start the moment it arrives, wherever it falls against
+            // the encoder's clock, while the average still never exceeds
+            // the cap. A strict gap between starts instead makes the first
+            // frame's wait for its slot repeat on every frame after it.
+            //
+            // Tokens accrue 5% faster than the cap: content at exactly the
+            // cap (a 60 Hz desktop under a 60 fps cap) arrives with a little
+            // jitter, and a bucket refilled at exactly its rate drains on
+            // every early frame and never refills, so each frame waits again.
+            const BURST: f64 = 1.5;
+            const HEADROOM: f64 = 1.05;
+            let fps = f64::from(settings.max_fps.max(1.0)) * HEADROOM;
+            let mut tokens = BURST;
+            let mut refilled = Instant::now();
             while !enc_stop.load(Ordering::Relaxed) {
+                let now = Instant::now();
+                tokens = (tokens + (now - refilled).as_secs_f64() * fps).min(BURST);
+                refilled = now;
                 let timeout = if pending.is_some() {
-                    min_interval.saturating_sub(last_start.elapsed())
+                    Duration::from_secs_f64(((1.0 - tokens) / fps).max(0.0))
                 } else {
                     Duration::from_millis(100)
                 };
@@ -359,7 +375,10 @@ impl EncodePipeline {
                     continue;
                 }
                 let frame = if pending.is_some() {
-                    if last_start.elapsed() < min_interval {
+                    let now = Instant::now();
+                    tokens = (tokens + (now - refilled).as_secs_f64() * fps).min(BURST);
+                    refilled = now;
+                    if tokens < 1.0 {
                         continue;
                     }
                     pending.take().unwrap()
@@ -369,7 +388,7 @@ impl EncodePipeline {
                 } else {
                     continue;
                 };
-                last_start = Instant::now();
+                tokens = (tokens - 1.0).max(0.0);
                 let (w, h) = frame.dimensions();
                 if encoder
                     .as_ref()
@@ -1458,7 +1477,7 @@ mod tests {
             &DesktopOptions::default(),
             backend,
             hevc_failed,
-            |w, h| {
+            |_, w, h| {
                 probed.push((w, h));
                 probe_ok
             },
