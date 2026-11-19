@@ -304,7 +304,15 @@ struct EncodePipeline {
     /// A GPU frame failed to encode: sent once, after which capture stays
     /// in shared memory.
     gpu_failed_rx: mpsc::UnboundedReceiver<String>,
+    /// The encoder thread, joined on drop (bounded by [`ENCODE_JOIN`]).
+    thread: Option<std::thread::JoinHandle<()>>,
 }
+
+/// How long dropping a pipeline waits for its encoder thread to close the
+/// encoder. Returning sooner let the process reach `exit()` with NVENC
+/// still open on that thread, and NVIDIA's libnvcuvid exit handlers then
+/// deadlocked with it (the sender hung on Ctrl+C about half the time).
+const ENCODE_JOIN: Duration = Duration::from_secs(2);
 
 /// Consecutive failed `encode` calls after which an HEVC stream is given up.
 const HEVC_MAX_CONSECUTIVE_FAILURES: u32 = 30;
@@ -327,7 +335,7 @@ impl EncodePipeline {
         let gpu_frames =
             (gpu_capture && settings.backend == encoder::Backend::Vaapi).then(GpuFrames::new);
         let enc_gpu = gpu_frames.clone();
-        spawn_reporting_panics("encode", lost_tx.clone(), move || {
+        let thread = spawn_reporting_panics("encode", lost_tx.clone(), move || {
             let mut encoder: Option<Encoder> = None;
             let hevc = settings.codec == Codec::Hevc;
             let mut failures = 0u32;
@@ -502,6 +510,7 @@ impl EncodePipeline {
             codec_failed_rx,
             gpu_frames,
             gpu_failed_rx,
+            thread: Some(thread),
         })
     }
 
@@ -530,6 +539,20 @@ impl EncodePipeline {
 impl Drop for EncodePipeline {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        // The thread looks at `stop` at least every 100 ms, after the encode
+        // in flight; then it drops (closes) the encoder.
+        let deadline = Instant::now() + ENCODE_JOIN;
+        while !thread.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if thread.is_finished() {
+            let _ = thread.join();
+        } else {
+            warn!("encode thread did not finish within {ENCODE_JOIN:?}; leaving it");
+        }
     }
 }
 
