@@ -30,6 +30,7 @@
 //! it); an [`Encoder`] never falls back to another codec by itself.
 
 mod convert;
+mod cuda;
 mod ffmpeg;
 mod openh264;
 mod stage;
@@ -270,7 +271,15 @@ impl Encoder {
             (Imp::Ffmpeg(_), Backend::Vaapi, Codec::Hevc) => {
                 "VA-API (hardware) HEVC, CPU colour conversion"
             }
-            (Imp::Ffmpeg(_), Backend::Nvenc, Codec::Hevc) => "NVENC (hardware) HEVC",
+            (Imp::Ffmpeg(e), Backend::Nvenc, Codec::Hevc) if e.gpu_convert() => {
+                "NVENC (hardware) HEVC, GPU colour conversion"
+            }
+            (Imp::Ffmpeg(_), Backend::Nvenc, Codec::Hevc) => {
+                "NVENC (hardware) HEVC, CPU colour conversion"
+            }
+            (Imp::Ffmpeg(e), Backend::Nvenc, Codec::H264) if e.gpu_convert() => {
+                "NVENC (hardware), GPU colour conversion"
+            }
             _ => self.backend.label(),
         }
     }
@@ -295,7 +304,7 @@ impl Encoder {
     /// Whether [`Self::encode`] takes [`FrameBuf::Dmabuf`] frames: VA-API
     /// with the colour conversion on the GPU.
     pub fn takes_dmabuf(&self) -> bool {
-        matches!(&self.imp, Imp::Ffmpeg(e) if e.gpu_convert())
+        matches!(&self.imp, Imp::Ffmpeg(e) if e.takes_dmabuf())
     }
 
     /// Frames at least this wide are converted by the [`ConvertStage`]
@@ -335,7 +344,7 @@ impl Encoder {
             ) => e.encode(pixels, *stride, *format, force_idr, frame.captured_at),
             (FrameBuf::Yuv(y), Imp::Ffmpeg(e)) => e.encode_yuv(y, force_idr, frame.captured_at),
             (FrameBuf::Yuv(_), _) => bail!("{} takes RGB frames only", self.label()),
-            (FrameBuf::Dmabuf(d), Imp::Ffmpeg(e)) if e.gpu_convert() => {
+            (FrameBuf::Dmabuf(d), Imp::Ffmpeg(e)) if e.takes_dmabuf() => {
                 e.encode_dmabuf(d, force_idr, frame.captured_at)
             }
             (FrameBuf::Dmabuf(_), _) => {
