@@ -220,8 +220,8 @@ fn even_f(v: f64) -> u32 {
     even(v.clamp(0.0, f64::from(u32::MAX)) as u32)
 }
 
-/// The receiver's panel rate, as the output's refresh and the stream's
-/// ceiling.
+/// The receiver's panel rate, the stream's ceiling. The output refreshes at
+/// the stream's rate.
 fn panel_hz(hello: &Hello) -> u32 {
     hello
         .display_max_frame_rate
@@ -323,7 +323,12 @@ pub fn plan(hello: &Hello, opts: &DesktopOptions, codec: Codec) -> Result<Deskto
         output: OutputMode {
             width: output.w,
             height: output.h,
-            hz: panel_hz(hello),
+            // The stream's rate, not the panel's: a 120 Hz panel showing a
+            // 60 fps stream gets a 60 Hz output, so apps render only the
+            // frames that are sent and every one is evenly spaced. A 120 Hz
+            // output made content arrive at 120 Hz and the encoder pick
+            // every other frame, which with capture jitter came out uneven.
+            hz: fps,
             scale,
         },
         stream: StreamPlan {
@@ -869,10 +874,11 @@ mod tests {
         };
         assert_eq!(plan(&h, &o, Codec::H264).unwrap().stream.fps, 30);
         // A 120 Hz panel is a display fact, not a decoder promise: the
-        // legacy contract (no videoCaps) streams at most 60, like the Mac.
+        // legacy contract (no videoCaps) streams at most 60, like the Mac,
+        // and the output refreshes at the stream's 60.
         h.video_caps = None;
         let p = plan(&h, &PASS, Codec::H264).unwrap();
-        assert_eq!((p.output.hz, p.stream.fps), (120, 60));
+        assert_eq!((p.output.hz, p.stream.fps), (60, 60));
         let mut small = fixture!("iphone-15-pro-landscape");
         small.video_caps = None;
         assert_eq!(plan(&small, &PASS, Codec::H264).unwrap().stream.fps, 60);
