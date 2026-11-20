@@ -250,6 +250,13 @@ mod tests {
     }
 
     #[test]
+    fn auto_goes_right() {
+        let auto = plan(&state(), "Meta-1", 3.0, Position::Auto).unwrap();
+        let right = plan(&state(), "Meta-1", 3.0, Position::AutoRight).unwrap();
+        assert_eq!(auto, right);
+    }
+
+    #[test]
     fn others_pass_through_unchanged_and_ours_goes_right() {
         let (c, scale) = plan(&state(), "Meta-1", 3.0, Position::AutoRight).unwrap();
         assert_eq!(scale, 2.0);

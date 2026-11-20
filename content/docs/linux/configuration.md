@@ -31,7 +31,7 @@ Each key works at the top of `sender.toml` and as a `run` option.
 | Key / option | Default | Values |
 |---|---|---|
 | `to` | the only receiver found | Receiver name (or part of it), id, or `host:port` |
-| `position` | `auto-right` | `auto-right`, `auto-left`, `auto-up`, `auto-down`, or `x,y` |
+| `position` | `auto` | `auto`, `auto-right`, `auto-left`, `auto-up`, `auto-down`, or `x,y` |
 | `scale` | `passthrough` | `passthrough`, `mac` or a number |
 | `bitrate-mbps` | `20` | Video bitrate in Mbit/s |
 | `max-fps` | `60` | Frame-rate cap |
@@ -58,9 +58,11 @@ straight to a `host:port`.
 
 ### position
 
-Where the virtual display goes relative to your other monitors:
-`auto-right`, `auto-left`, `auto-up`, `auto-down`, or explicit `x,y`
-coordinates. On KDE Plasma, which does not allow negative coordinates,
+Where the virtual display goes relative to your other monitors: `auto`
+(the default), `auto-right`, `auto-left`, `auto-up`, `auto-down`, or explicit
+`x,y` coordinates. On Hyprland, `auto` sends no position, so a monitor rule for the display (`od-xxxxxx`, for example one HyprMon saves) places it and the position survives reconnects and config reloads. With no rule, Hyprland puts it to the right. On other desktops `auto` is `auto-right`. An explicit position is applied on every
+connect and config reload, so it overrides your monitor rules. On Hyprland,
+the last explicit position stays in effect until the next config reload. On KDE Plasma, which does not allow negative coordinates,
 `auto-left` and `auto-up` put the virtual display at the top left and shift
 your other screens; see [KDE Plasma](/docs/linux/desktops/#kde-plasma).
 
@@ -169,7 +171,7 @@ file.
 
 ```toml
 to = "iPhone"            # used when run gets no --to
-position = "auto-right"
+position = "auto"        # Hyprland: your monitor rules decide; elsewhere auto-right
 scale = "passthrough"    # "passthrough", "mac" or a number
 bitrate-mbps = 20
 max-fps = 60

@@ -6,7 +6,7 @@
 //!
 //! ```toml
 //! to = "iPhone"
-//! position = "auto"          # auto (Hyprland: its monitor rules) | auto-right | ... | "x,y"
+//! position = "auto"           # auto (Hyprland: its monitor rules) | auto-right | ... | "x,y"
 //! scale = "passthrough"       # or "mac", or a number
 //! bitrate-mbps = 20
 //! max-fps = 60
@@ -255,6 +255,11 @@ mod tests {
         bitrate-mbps = 40.5
         scale = "passthrough"
     "#;
+
+    #[test]
+    fn the_default_position_leaves_placement_to_the_compositor() {
+        assert_eq!(builtin().position, Some(Position::Auto));
+    }
 
     #[test]
     fn a_full_file_parses() {

@@ -83,7 +83,6 @@ fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
     Some((n()?, n()?, n().unwrap_or(0)))
 }
 
-/// The Lua `position` string for a monitor rule.
 /// The `position` of an `hl.monitor` rule, or `None` to leave it out.
 /// `hl.monitor` merges into the output's existing rule field by field
 /// (Hyprland 0.56.2, checked live), so without one the position from the
@@ -199,9 +198,8 @@ impl HyprlandIpc {
         Ok(())
     }
 
-    /// Set mode and scale. `position` is a Hyprland position spec, e.g.
-    /// `auto-right`; the sender uses it to park the virtual display beside
-    /// the real ones.
+    /// Set mode and scale, and the position unless it is `Position::Auto`
+    /// (see [`position_spec`]).
     pub fn configure(
         &self,
         name: &str,

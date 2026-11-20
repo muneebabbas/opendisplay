@@ -523,5 +523,7 @@ mod placement_tests {
         assert_eq!(place(Position::AutoUp, 800, 600, &both), (-1920, -700));
         assert_eq!(place(Position::At(5, 6), 800, 600, &both), (5, 6));
         assert_eq!(place(Position::AutoRight, 800, 600, &[]), (0, 0));
+        // Placing it is up to us here: auto means right.
+        assert_eq!(place(Position::Auto, 800, 600, &both), (1512, 0));
     }
 }

@@ -66,8 +66,8 @@ od-sender run --to iMac --wait      # wait until the iMac shows up
 ## Placing the display
 
 `--position` decides where the virtual display goes relative to your other
-monitors: `auto-right` (the default), `auto-left`, `auto-up`, `auto-down`, or
-explicit `x,y` coordinates.
+monitors: `auto` (the default), `auto-right`, `auto-left`, `auto-up`,
+`auto-down`, or explicit `x,y` coordinates. On Hyprland, `auto` sends no position, so a monitor rule for the display (`od-xxxxxx`, for example one HyprMon saves) places it and the position survives reconnects and config reloads. With no rule, Hyprland puts it to the right. On other desktops `auto` is `auto-right`.
 
 ```sh
 od-sender run --to iMac --position auto-up
