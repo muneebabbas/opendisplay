@@ -6,7 +6,7 @@
 //!
 //! ```toml
 //! to = "iPhone"
-//! position = "auto-right"
+//! position = "auto"          # auto (Hyprland: its monitor rules) | auto-right | ... | "x,y"
 //! scale = "passthrough"       # or "mac", or a number
 //! bitrate-mbps = 20
 //! max-fps = 60
@@ -225,7 +225,7 @@ pub fn default_path() -> Option<PathBuf> {
 /// The built-in defaults, the bottom layer.
 pub fn builtin() -> Layer {
     Layer {
-        position: Some(Position::AutoRight),
+        position: Some(Position::Auto),
         scale: Some(ScalePolicy::Passthrough),
         bitrate_mbps: Some(20.0),
         workspace: None,

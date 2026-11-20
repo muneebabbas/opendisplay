@@ -1082,6 +1082,7 @@ fn extending_line(receiver: &str, info: &DisplayInfo, position: Position) -> Str
         (info.height as f64 / scale).round(),
     );
     let place = match position {
+        Position::Auto => "placed by the compositor".to_string(),
         Position::AutoRight => "right of your other displays".to_string(),
         Position::AutoLeft => "left of your other displays".to_string(),
         Position::AutoUp => "above your other displays".to_string(),

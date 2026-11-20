@@ -84,14 +84,37 @@ fn parse_version(s: &str) -> Option<(u32, u32, u32)> {
 }
 
 /// The Lua `position` string for a monitor rule.
-pub fn position_spec(p: Position) -> String {
-    match p {
+/// The `position` of an `hl.monitor` rule, or `None` to leave it out.
+/// `hl.monitor` merges into the output's existing rule field by field
+/// (Hyprland 0.56.2, checked live), so without one the position from the
+/// user's monitor rule, or Hyprland's own placement, is kept.
+pub fn position_spec(p: Position) -> Option<String> {
+    Some(match p {
+        Position::Auto => return None,
         Position::AutoRight => "auto-right".into(),
         Position::AutoLeft => "auto-left".into(),
         Position::AutoUp => "auto-up".into(),
         Position::AutoDown => "auto-down".into(),
         Position::At(x, y) => format!("{x}x{y}"),
-    }
+    })
+}
+
+/// The `hl.monitor` call that sizes `name`.
+fn monitor_rule(
+    name: &str,
+    width: u32,
+    height: u32,
+    hz: u32,
+    scale: f64,
+    position: Position,
+) -> String {
+    let position = position_spec(position)
+        .map(|p| format!(", position=\"{p}\""))
+        .unwrap_or_default();
+    format!(
+        "hl.monitor({{output={}, mode=\"{width}x{height}@{hz}\"{position}, scale={scale}}})",
+        lua_str(name)
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -188,11 +211,7 @@ impl HyprlandIpc {
         scale: f64,
         position: Position,
     ) -> Result<Monitor> {
-        let position = position_spec(position);
-        let lua = format!(
-            "hl.monitor({{output={}, mode=\"{width}x{height}@{hz}\", position=\"{position}\", scale={scale}}})",
-            lua_str(name)
-        );
+        let lua = monitor_rule(name, width, height, hz, scale, position);
         let r = self.request(&format!("eval {lua}"))?;
         if r.trim() != "ok" {
             bail!("eval failed: {r}");
@@ -349,7 +368,25 @@ mod tests {
 
     #[test]
     fn positions_render_as_monitor_rules() {
-        assert_eq!(position_spec(Position::AutoRight), "auto-right");
-        assert_eq!(position_spec(Position::At(-1600, 0)), "-1600x0");
+        assert_eq!(
+            position_spec(Position::AutoRight).as_deref(),
+            Some("auto-right")
+        );
+        assert_eq!(
+            position_spec(Position::At(-1600, 0)).as_deref(),
+            Some("-1600x0")
+        );
+        assert_eq!(position_spec(Position::Auto), None);
+    }
+
+    #[test]
+    fn auto_leaves_the_position_to_the_monitor_rule() {
+        let lua = monitor_rule("od-a0ec23", 2388, 1668, 60, 2.0, Position::Auto);
+        assert_eq!(
+            lua,
+            r#"hl.monitor({output="od-a0ec23", mode="2388x1668@60", scale=2})"#
+        );
+        let lua = monitor_rule("od-a0ec23", 2388, 1668, 60, 2.0, Position::At(1312, 1440));
+        assert!(lua.contains(r#"position="1312x1440""#), "{lua}");
     }
 }

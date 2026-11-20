@@ -59,6 +59,11 @@ impl fmt::Display for BackendId {
 /// Where the virtual output goes relative to the existing ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Position {
+    /// The compositor's own placement. Hyprland: no position is sent, so a
+    /// monitor rule for the output (`monitors.lua`, HyprMon) places it and
+    /// a position the user sets there survives reconnects and config
+    /// reloads. Elsewhere: the same as `AutoRight`.
+    Auto,
     AutoRight,
     AutoLeft,
     AutoUp,
@@ -69,9 +74,10 @@ pub enum Position {
 impl FromStr for Position {
     type Err = anyhow::Error;
 
-    /// `auto-right|auto-left|auto-up|auto-down`, or `x,y` / `XxY`.
+    /// `auto|auto-right|auto-left|auto-up|auto-down`, or `x,y` / `XxY`.
     fn from_str(s: &str) -> Result<Self> {
         Ok(match s {
+            "auto" => Position::Auto,
             "auto-right" => Position::AutoRight,
             "auto-left" => Position::AutoLeft,
             "auto-up" => Position::AutoUp,
@@ -79,7 +85,7 @@ impl FromStr for Position {
             _ => {
                 let Some((x, y)) = s.split_once(',').or_else(|| s.split_once('x')) else {
                     bail!(
-                        "position {s:?}: expected auto-right, auto-left, auto-up, auto-down or x,y"
+                        "position {s:?}: expected auto, auto-right, auto-left, auto-up, auto-down or x,y"
                     );
                 };
                 At(x.trim().parse()?, y.trim().parse()?)
@@ -110,7 +116,7 @@ pub fn place(position: Position, w: i32, h: i32, others: &[LayoutRect]) -> (i32,
     let bottom = |r: &LayoutRect| r.y + r.height;
     match position {
         Position::At(x, y) => (x, y),
-        Position::AutoRight => {
+        Position::Auto | Position::AutoRight => {
             let edge = others.iter().max_by_key(|r| right(r)).unwrap();
             (right(edge), edge.y)
         }
@@ -483,6 +489,7 @@ mod tests {
             Position::AutoRight
         );
         assert_eq!("auto-up".parse::<Position>().unwrap(), Position::AutoUp);
+        assert_eq!("auto".parse::<Position>().unwrap(), Position::Auto);
         assert_eq!(
             "-1600,0".parse::<Position>().unwrap(),
             Position::At(-1600, 0)

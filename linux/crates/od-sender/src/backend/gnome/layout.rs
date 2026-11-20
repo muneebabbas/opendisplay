@@ -127,7 +127,7 @@ pub fn plan(
     let right = others.iter().map(|(c, e)| c.x + e.0).max().unwrap_or(0);
     let bottom = others.iter().map(|(c, e)| c.y + e.1).max().unwrap_or(0);
     let (mut x, mut y) = match position {
-        Position::AutoRight => (right, 0),
+        Position::Auto | Position::AutoRight => (right, 0),
         Position::AutoDown => (0, bottom),
         Position::AutoLeft => (-ow, 0),
         Position::AutoUp => (0, -oh),
