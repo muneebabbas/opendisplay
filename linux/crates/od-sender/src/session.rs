@@ -1082,6 +1082,7 @@ fn extending_line(receiver: &str, info: &DisplayInfo, position: Position) -> Str
         (info.height as f64 / scale).round(),
     );
     let place = match position {
+        Position::Auto => format!("at {},{}", info.x, info.y),
         Position::AutoRight => "right of your other displays".to_string(),
         Position::AutoLeft => "left of your other displays".to_string(),
         Position::AutoUp => "above your other displays".to_string(),
@@ -2514,11 +2515,19 @@ mod tests {
             scale: 2.6666667,
             width: 2424,
             height: 1080,
-            ..info
+            ..info.clone()
         };
         assert!(
             extending_line("Pixel", &frac, Position::At(10, 20))
                 .contains("909x405 logical at 2.67x (od-1f046d, at 10,20)")
+        );
+        let placed = DisplayInfo {
+            x: 1312,
+            y: 1440,
+            ..info
+        };
+        assert!(
+            extending_line("iPad", &placed, Position::Auto).contains("(od-1f046d, at 1312,1440)")
         );
     }
 

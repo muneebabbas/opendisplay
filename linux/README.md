@@ -190,7 +190,7 @@ Useful `run` options:
 |---|---|---|
 | `--to` | the only receiver found | Receiver name, id, or `host:port` |
 | `--wait` | off | Keep looking until the receiver appears (the login unit uses it) |
-| `--position` | `auto-right` | Where the virtual display goes: `auto-right`, `auto-left`, `auto-up`, `auto-down`, or `x,y` |
+| `--position` | `auto` | Where the virtual display goes: `auto`, `auto-right`, `auto-left`, `auto-up`, `auto-down`, or `x,y`. On Hyprland, `auto` sends no position, so a monitor rule for the display (`od-xxxxxx`, for example one HyprMon saves) places it and the position survives reconnects and config reloads. On other desktops `auto` is `auto-right` |
 | `--scale` | `passthrough` | `passthrough` (the receiver's own, 3 on most iPhones), `mac` (2 for Retina-class screens, else 1, like the Mac sender) or a number. GNOME and Hyprland round to a scale they support (GNOME: an iPhone's 3 becomes 2; Hyprland: a Pixel's 2.625 becomes 2.667). If text is too small, try a larger number |
 | `--bitrate-mbps` | `20` | Video bitrate |
 | `--max-fps` | 60 | Frame-rate cap; above 60 only when the receiver's decoder advertises it, and never above its panel rate |
@@ -223,7 +223,7 @@ Defaults for `run`'s options, plus overrides per receiver, go in
 
 ```toml
 to = "iPhone"            # used when run gets no --to
-position = "auto-right"
+position = "auto"        # Hyprland: your monitor rules decide; elsewhere auto-right
 scale = "passthrough"    # "passthrough", "mac" or a number
 bitrate-mbps = 20
 max-fps = 60

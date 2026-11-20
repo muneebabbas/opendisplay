@@ -6,7 +6,7 @@
 //!
 //! ```toml
 //! to = "iPhone"
-//! position = "auto-right"
+//! position = "auto"           # auto (Hyprland: its monitor rules) | auto-right | ... | "x,y"
 //! scale = "passthrough"       # or "mac", or a number
 //! bitrate-mbps = 20
 //! max-fps = 60
@@ -225,7 +225,7 @@ pub fn default_path() -> Option<PathBuf> {
 /// The built-in defaults, the bottom layer.
 pub fn builtin() -> Layer {
     Layer {
-        position: Some(Position::AutoRight),
+        position: Some(Position::Auto),
         scale: Some(ScalePolicy::Passthrough),
         bitrate_mbps: Some(20.0),
         workspace: None,
@@ -255,6 +255,11 @@ mod tests {
         bitrate-mbps = 40.5
         scale = "passthrough"
     "#;
+
+    #[test]
+    fn the_default_position_leaves_placement_to_the_compositor() {
+        assert_eq!(builtin().position, Some(Position::Auto));
+    }
 
     #[test]
     fn a_full_file_parses() {

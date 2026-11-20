@@ -125,8 +125,11 @@ enum Cmd {
         /// Same as `--cursor off`.
         #[arg(long, conflicts_with = "cursor")]
         no_cursor: bool,
-        /// Position of the virtual display: auto-right, auto-left, auto-up,
-        /// auto-down, or "x,y" [default: auto-right, or the config file's].
+        /// Position of the virtual display: auto, auto-right, auto-left,
+        /// auto-up, auto-down, or "x,y". `auto` leaves it to the compositor;
+        /// on Hyprland a monitor rule for the output (HyprMon, monitors.lua)
+        /// wins and keeps it across reconnects. Elsewhere `auto` is
+        /// auto-right [default: auto, or the config file's].
         #[arg(long)]
         position: Option<Position>,
         /// Show this workspace (name or number) on the virtual display, without
@@ -339,7 +342,7 @@ fn real_main() -> Result<i32> {
                         } else {
                             cursor.or(config.cursor).unwrap_or_default()
                         },
-                        position: eff.position.unwrap_or(Position::AutoRight),
+                        position: eff.position.unwrap_or(Position::Auto),
                         workspace: eff.workspace.clone(),
                         keep_output,
                         reconnect: !no_reconnect,

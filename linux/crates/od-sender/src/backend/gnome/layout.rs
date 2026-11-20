@@ -127,7 +127,7 @@ pub fn plan(
     let right = others.iter().map(|(c, e)| c.x + e.0).max().unwrap_or(0);
     let bottom = others.iter().map(|(c, e)| c.y + e.1).max().unwrap_or(0);
     let (mut x, mut y) = match position {
-        Position::AutoRight => (right, 0),
+        Position::Auto | Position::AutoRight => (right, 0),
         Position::AutoDown => (0, bottom),
         Position::AutoLeft => (-ow, 0),
         Position::AutoUp => (0, -oh),
@@ -247,6 +247,13 @@ mod tests {
         assert_eq!(nearest_scale(&[1.0, 1.5, 2.0], 3.0), 2.0);
         assert_eq!(nearest_scale(&[1.0, 1.5, 2.0], 1.4), 1.5);
         assert_eq!(nearest_scale(&[], 2.0), 1.0);
+    }
+
+    #[test]
+    fn auto_goes_right() {
+        let auto = plan(&state(), "Meta-1", 3.0, Position::Auto).unwrap();
+        let right = plan(&state(), "Meta-1", 3.0, Position::AutoRight).unwrap();
+        assert_eq!(auto, right);
     }
 
     #[test]
